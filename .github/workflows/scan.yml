@@ -29,7 +29,7 @@ permissions:
 
 env:
   # The wheelgap release that produces the data. Bump it to pick up new targets.
-  WHEELGAP: "wheelgap==0.4.0"
+  WHEELGAP: "wheelgap==0.5.0"
   TOP: "5000"
 
 jobs:
