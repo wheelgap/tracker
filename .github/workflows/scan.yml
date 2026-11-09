@@ -36,6 +36,9 @@ jobs:
   scan:
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.scan)
     runs-on: ubuntu-latest
+    # A normal scan takes about a minute. If PyPI is down, each lookup retries with backoff,
+    # so cap the job instead of letting five slow attempts run to GitHub's 6-hour limit.
+    timeout-minutes: 60
     concurrency:
       group: scan
       cancel-in-progress: false
@@ -46,7 +49,8 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       - name: Scan
-        # Retry with a fresh index: a release can take a few minutes to reach PyPI's CDN.
+        # Retry with a fresh index: a release can take a few minutes to reach PyPI's CDN, and
+        # wheelgap refuses to write a scan where more than 5% of lookups failed (exit 1).
         run: |
           for attempt in 1 2 3 4 5; do
             uv run --no-project --refresh --with "$WHEELGAP" python -m wheelgap.scan --top "$TOP" --out data/coverage.json && exit 0
