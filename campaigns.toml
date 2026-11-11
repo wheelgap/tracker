@@ -1,0 +1,13 @@
+# Campaigns published by scripts/build_campaigns.py when the site is assembled.
+# Each entry becomes a static page at campaigns/<id>/.
+
+[[campaign]]
+id = "musl-aarch64"
+title = "musllinux aarch64 wheels for the top 500"
+platform = "musl-aarch64"
+top = 500
+start = "2026-11-11"
+# Pinned, so the campaign doesn't jump to a new Python (and a new to-do list) when the scan adds one.
+python = "3.14"
+description = "musllinux aarch64 is what pip installs from in python:*-alpine images on ARM64 hosts such as AWS Graviton, Ampere and Apple-silicon machines running Docker. This page turns the gaps among the most-downloaded packages into a list people can work through, one package at a time."
+how_to = "https://github.com/wheelgap/tracker/blob/main/docs/adding-wheels-upstream.md"

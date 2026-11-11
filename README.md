@@ -54,7 +54,7 @@ Use the normalized name, as for the API; the package lookup on the site shows th
 
 ## Package pages
 
-Each package also has a plain HTML page, e.g. [`p/numpy/`](https://wheelgap.github.io/tracker/p/numpy/), with the same status table as the lookup, a one-line summary of its gaps for the newest non-free-threaded Python, and the `wheelgap --explain` command. The lookup links to it, and [`sitemap.xml`](https://wheelgap.github.io/tracker/sitemap.xml) lists them all. They're built when the site is published, by [`scripts/build_pages.py`](scripts/build_pages.py).
+Each package also has a plain HTML page, e.g. [`p/numpy/`](https://wheelgap.github.io/tracker/p/numpy/), with the same status table as the lookup, a one-line summary of its gaps for the newest non-free-threaded Python, and the `wheelgap --explain` command. The lookup links to it, and [`sitemap.xml`](https://wheelgap.github.io/tracker/sitemap.xml) lists them all. They're built when the site is published, by [`scripts/build_pages.py`](scripts/build_pages.py). Campaign pages, starting with [musllinux aarch64 wheels for the top 500](https://wheelgap.github.io/tracker/campaigns/musl-aarch64/), are built the same night by [`scripts/build_campaigns.py`](scripts/build_campaigns.py) from [`campaigns.toml`](campaigns.toml).
 
 ## Caveats
 

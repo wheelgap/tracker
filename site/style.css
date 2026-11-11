@@ -132,7 +132,7 @@ h2 { font-size: 1.25rem; margin: 0 0 8px; letter-spacing: -0.01em; }
 .rank { color: var(--muted); font: 0.85rem var(--mono); font-variant-numeric: tabular-nums; }
 .gaps a { font: 600 0.95rem var(--mono); text-decoration: none; color: var(--text); }
 .gaps a:hover { color: var(--accent); }
-.gaps .ver { color: var(--muted); font: 0.8rem var(--mono); margin-left: 6px; }
+.gaps .ver, .matrix .ver { color: var(--muted); font: 0.8rem var(--mono); margin-left: 6px; }
 .empty { padding: 14px; color: var(--muted); }
 
 .cta { border-top: 1px solid var(--line); padding-top: 32px; }
