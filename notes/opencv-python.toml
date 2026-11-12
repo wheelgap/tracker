@@ -1,0 +1,6 @@
+[[note]]
+platforms = ["musl-x86_64", "musl-aarch64"]
+kind = "upstream-issue"
+text = "opencv-python has manylinux wheels but no musllinux ones, so on Alpine and other musl distributions pip builds OpenCV from the sdist, as its README describes. musllinux wheels are requested in opencv/opencv-python#1099; on a glibc-based distribution such as Debian, pip installs the manylinux wheel instead (not on free-threaded Python)."
+links = ["https://github.com/opencv/opencv-python/issues/1099", "https://github.com/opencv/opencv-python#source-distributions", "https://pypi.org/project/opencv-python/#files"]
+updated = 2026-11-12

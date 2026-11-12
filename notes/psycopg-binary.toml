@@ -1,0 +1,6 @@
+[[note]]
+platforms = ["linux-x86_64", "linux-aarch64", "musl-x86_64", "musl-aarch64", "macos-x86_64", "macos-arm64", "win-amd64"]
+kind = "upstream-issue"
+text = "psycopg-binary has no free-threaded wheels: the maintainers will publish them only once free-threading support is complete, tracked in psycopg/psycopg#1095. Until then they point to the pure-Python `pip install psycopg` (needs the libpq client library) or a local `pip install \"psycopg[c]\"` build, at your own risk."
+links = ["https://github.com/psycopg/psycopg/issues/1095", "https://www.psycopg.org/psycopg3/docs/basic/install.html#pure-python-installation", "https://pypi.org/project/psycopg-binary/#files"]
+updated = 2026-11-12

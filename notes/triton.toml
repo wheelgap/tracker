@@ -1,0 +1,6 @@
+[[note]]
+platforms = ["win-amd64"]
+kind = "alternative"
+text = "Triton supports Linux only. On Windows x86-64, the triton-windows fork, now under the triton-lang organization, has wheels for CPython 3.11 to 3.15 (not free-threaded): `pip install triton-windows`, choosing the version that matches your PyTorch from the table in its README."
+links = ["https://github.com/triton-lang/triton-windows#readme", "https://pypi.org/project/triton-windows/#files", "https://github.com/triton-lang/triton#readme"]
+updated = 2026-11-12

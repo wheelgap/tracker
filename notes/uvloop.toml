@@ -1,0 +1,6 @@
+[[note]]
+platforms = ["win-amd64", "win-arm64"]
+kind = "upstream-issue"
+text = "uvloop does not support Windows: its setup.py stops with an error there, and Windows support is tracked in MagicStack/uvloop#14. Declare it as `uvloop; sys_platform != 'win32'` and use the default asyncio loop on Windows, or try winloop, a third-party Windows port with wheels for these platforms: `pip install winloop`."
+links = ["https://github.com/MagicStack/uvloop/issues/14", "https://github.com/MagicStack/uvloop/blob/master/setup.py", "https://pypi.org/project/winloop/#files"]
+updated = 2026-11-12

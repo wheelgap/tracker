@@ -1,0 +1,6 @@
+[[note]]
+platforms = ["macos-x86_64"]
+kind = "other-source"
+text = "PyTorch stopped publishing x86_64 macOS wheels after 2.2.2, which has none for Python 3.13 or later (pytorch/pytorch#114602). On an Intel Mac, conda-forge still builds CPU-only PyTorch for osx-64: `conda install -c conda-forge pytorch`."
+links = ["https://github.com/pytorch/pytorch/issues/114602", "https://anaconda.org/conda-forge/pytorch/files", "https://github.com/conda-forge/pytorch-cpu-feedstock"]
+updated = 2026-11-12
