@@ -119,6 +119,9 @@ def load_campaigns(config_path: Path) -> list[dict]:
                 sys.exit(f"build_campaigns: campaign {ident!r} {field} must be a string")
         if not campaign.get("how_to", "https://").startswith("https://"):
             sys.exit(f"build_campaigns: campaign {ident!r} how_to must be an https:// URL")
+        sources = campaign.get("sources", [])
+        if not isinstance(sources, list) or not all(isinstance(u, str) and u.startswith("https://") for u in sources):
+            sys.exit(f"build_campaigns: campaign {ident!r} sources must be a list of https:// URLs")
     return campaigns
 
 
@@ -536,6 +539,10 @@ def page(
             f"as a whole (a new Python, an sdist-only release, or no {e(os_name)} wheels by design), not one this "
             "campaign should ask about.</p>\n"
         )
+    sources_html = ""
+    if campaign.get("sources"):
+        links = " · ".join(f'<a href="{e(u)}">{e(u.removeprefix("https://"))}</a>' for u in campaign["sources"])
+        sources_html = f'    <p class="meta">Sources: {links}</p>\n'
     how_to = campaign.get("how_to")
     how_to_html = f' <a href="{e(how_to)}">How to ask for a missing wheel</a>.' if how_to else ""
     python_why = (
@@ -608,7 +615,7 @@ def page(
     <p class="eyebrow"><a href="../../">wheelgap tracker</a> · <a href="../">Campaigns</a></p>
     <h1>{e(title)}</h1>
     <p class="lede">{e(lede)}</p>
-    <p class="meta">From the wheelgap {e(str(scan["wheelgap"]))} scan of {e(generated)}, using Python {e(python)}{python_why}.</p>
+{sources_html}    <p class="meta">From the wheelgap {e(str(scan["wheelgap"]))} scan of {e(generated)}, using Python {e(python)}{python_why}.</p>
   </header>
   <main class="wrap">
     <section>

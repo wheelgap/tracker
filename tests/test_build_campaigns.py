@@ -614,6 +614,34 @@ python = "3.13"
         footer = home.split("<footer", 1)[1]
         self.assertIn('<a href="campaigns/">Campaigns</a>', footer)
 
+    def test_sources_are_linked_and_escaped(self):
+        self.config.write_text(
+            CONFIG + 'sources = ["https://example.com/a?b=1&c=<2>", "https://example.org/"]\n', encoding="utf-8"
+        )
+        page = self.built_page()
+        self.assertIn(
+            '<p class="meta">Sources: <a href="https://example.com/a?b=1&amp;c=&lt;2&gt;">example.com/a?b=1&amp;c=&lt;2&gt;</a>'
+            ' · <a href="https://example.org/">example.org/</a></p>',
+            page,
+        )
+        for line in ('sources = ["http://example.com/"]', 'sources = "https://example.com/"', "sources = [1]"):
+            with self.subTest(line=line):
+                self.config.write_text(CONFIG + line + "\n", encoding="utf-8")
+                with self.assertRaises(SystemExit):
+                    build_campaigns.build(self.coverage, self.history, self.changes, self.config, self.site)
+
+    def test_repo_config_has_the_win_arm64_campaign(self):
+        root = Path(__file__).resolve().parents[1]
+        campaigns = {c["id"]: c for c in build_campaigns.load_campaigns(root / "campaigns.toml")}
+        win = campaigns["win-arm64"]
+        self.assertEqual((win["platform"], win["top"], win["python"]), ("win-arm64", 500, "3.14"))
+        self.assertTrue(win["description"])
+        self.assertTrue(win["sources"])
+        # Its starting to-do list is recorded, for the same target.
+        baseline = build_campaigns.load_baseline(root / "data" / "campaigns" / "win-arm64.json")
+        self.assertEqual(baseline["target"], "3.14 win-arm64")
+        self.assertEqual(baseline["start"], win["start"])
+
     def test_rejects_unknown_scan_schema(self):
         self.scan["schema"] = 2
         self.write_inputs()
