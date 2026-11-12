@@ -1,5 +1,7 @@
 """Publish the 50 highest-ranked packages with a source or missing gap for each target.
 
+`bundled` (Pyodide ships its own build) isn't a gap, and nor is `unknown` (a failed lookup).
+
     python scripts/build_most_wanted.py data/coverage.json _site/data/most-wanted.json
 
 Built at publish time; the generated file is not committed.
@@ -12,6 +14,7 @@ import sys
 from pathlib import Path
 
 SCAN_SCHEMA = 1
+GAP = ("source", "missing")
 
 
 def build(coverage_path: Path, out: Path) -> int:
@@ -24,7 +27,7 @@ def build(coverage_path: Path, out: Path) -> int:
         if package["error"]:
             continue
         for label, status in zip(labels, package["results"], strict=True):
-            if status in ("source", "missing") and len(wanted[label]) < 50:
+            if status in GAP and len(wanted[label]) < 50:
                 wanted[label].append({
                     "rank": package["rank"],
                     "name": package["name"],

@@ -2,9 +2,11 @@
 
     python scripts/build_lookup.py data/coverage.json _site/data/packages [notes_dir]
 
-Writes <out>/<name>.json for each package (name canonicalised as in PEP 503) and <out>.json
-(e.g. data/packages.json) listing every package and target. Each package file carries the
-package's current notes from notes_dir (default: the repository's notes/). Runs at publish
+Writes <out>/<name>.json for each package (name canonicalised as in PEP 503), <out>.json
+(e.g. data/packages.json) listing every package and target, and pyodide.json next to it naming the
+Pyodide release behind each Python's `bundled` results. Each package file carries the package's
+current notes from notes_dir (default: the repository's notes/) and, for its bundled cells, the
+version Pyodide ships (read from the committed lock files, see pyodide_locks.py). Runs at publish
 time, so the files are never committed.
 """
 
@@ -16,9 +18,10 @@ import sys
 from pathlib import Path
 
 if __package__:  # imported as scripts.build_lookup (the tests)
-    from . import check_notes
+    from . import check_notes, pyodide_locks
 else:  # run as python scripts/build_lookup.py
     import check_notes
+    import pyodide_locks
 
 # A canonical name is also a safe file name: no slashes, dots or leading dashes.
 SCHEMA = 1  # of the files written here: bump if a field changes meaning or goes away
@@ -35,13 +38,17 @@ def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, separators=(",", ":")) + "\n", encoding="utf-8")
 
 
-def build(coverage_path: Path, out: Path, notes_dir: Path | None = None) -> int:
-    """Write the files; notes come from notes_dir, or none when it is None."""
+def build(
+    coverage_path: Path, out: Path, notes_dir: Path | None = None, root: Path = pyodide_locks.ROOT
+) -> int:
+    """Write the files; notes come from notes_dir, or none when it is None. root holds pyodide/locks.json."""
     scan = json.loads(coverage_path.read_text(encoding="utf-8"))
     if scan.get("schema") != SCAN_SCHEMA:
         sys.exit(f"build_lookup: coverage.json schema {scan.get('schema')!r}, expected {SCAN_SCHEMA}")
     notes = check_notes.load(notes_dir, scan) if notes_dir is not None else {}
     labels = [t["label"] for t in scan["targets"]]
+    found = pyodide_locks.releases(scan, root)
+    per_target = pyodide_locks.pyodide_targets(scan["targets"], found)
     out.mkdir(parents=True, exist_ok=True)
     index = {}
     for p in scan["packages"]:
@@ -60,6 +67,8 @@ def build(coverage_path: Path, out: Path, notes_dir: Path | None = None) -> int:
             "generated": scan["generated"],
             "wheelgap": scan["wheelgap"],
             "results": dict(zip(labels, p["results"], strict=True)),
+            "pyodide": per_target,
+            "bundled": pyodide_locks.bundled(p, scan["targets"], found),
             "notes": [
                 check_notes.as_json(n) for n in check_notes.current(notes.get(name, []), p, scan["targets"])
             ],
@@ -70,6 +79,11 @@ def build(coverage_path: Path, out: Path, notes_dir: Path | None = None) -> int:
         "wheelgap": scan["wheelgap"],
         "targets": scan["targets"],
         "packages": index,
+    })
+    write_json(out.parent / "pyodide.json", {
+        "schema": SCHEMA,
+        "generated": scan["generated"],
+        "pythons": {py: {"pyodide": r["pyodide"], "lock": r["url"]} for py, r in sorted(found.items())},
     })
     return len(index)
 

@@ -3,11 +3,13 @@
     python scripts/update_changes.py previous.json data/coverage.json data/changes.json
 
 previous.json is the committed data/coverage.json, copied aside before the scan overwrites it.
-Only changes between `wheel` and something else count; a cell that was or is `unknown` (a lookup
-error) is skipped, so a flaky lookup doesn't show up as a lost and then a regained wheel. Targets
-or packages that are only in one of the two scans are skipped too. A night whose scan used a
-different wheelgap version is skipped as a whole: its differences come from wheelgap, not from
-the packages. Entries older than 90 days are dropped, so the file stays small.
+Only changes between `wheel` and something else count, except `bundled` (Pyodide ships its own
+build): it installs as a wheel does, so `bundled` <-> `wheel` is no change either way. A cell that
+was or is `unknown` (a lookup error) is skipped, so a flaky lookup doesn't show up as a lost and
+then a regained wheel. Targets or packages that are only in one of the two scans are skipped too.
+A night whose scan used a different wheelgap version is skipped as a whole: its differences come
+from wheelgap, not from the packages. Entries older than 90 days are dropped, so the file stays
+small.
 """
 
 from __future__ import annotations
@@ -18,6 +20,14 @@ from datetime import date, timedelta
 from pathlib import Path
 
 KEEP_DAYS = 90
+INSTALLABLE = ("wheel", "bundled")
+
+
+def counts(frm: str, to: str) -> bool:
+    """Whether a cell going from `frm` to `to` is a wheel gained or lost."""
+    if frm == to or "unknown" in (frm, to) or "wheel" not in (frm, to):
+        return False
+    return not (frm in INSTALLABLE and to in INSTALLABLE)
 
 
 def diff(old: dict, new: dict) -> tuple[list[dict], list[dict]]:
@@ -33,7 +43,7 @@ def diff(old: dict, new: dict) -> tuple[list[dict], list[dict]]:
             continue
         for new_i, old_i in shared:
             frm, to = before["results"][old_i], pkg["results"][new_i]
-            if frm == to or "unknown" in (frm, to) or "wheel" not in (frm, to):
+            if not counts(frm, to):
                 continue
             item = {
                 "name": pkg["name"],
@@ -59,7 +69,7 @@ def merge(earlier: dict, gained: list[dict], lost: list[dict]) -> tuple[list[dic
             cells[key].update(version=item["version"], to=item["to"])
         else:
             cells[key] = dict(item)
-    kept = [i for i in cells.values() if i["from"] != i["to"] and "wheel" in (i["from"], i["to"])]
+    kept = [i for i in cells.values() if counts(i["from"], i["to"])]
     return [i for i in kept if i["to"] == "wheel"], [i for i in kept if i["from"] == "wheel"]
 
 

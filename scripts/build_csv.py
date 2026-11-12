@@ -3,7 +3,7 @@
     python scripts/build_csv.py data/coverage.json _site/data/coverage.csv
 
 Writes one row per package: rank, name, version, downloads, pure, error, then one
-column per target, named by its label, holding wheel/source/missing/unknown/n/a.
+column per target, named by its label, holding wheel/bundled/source/missing/unknown/n/a.
 Runs at publish time, so the file is never committed.
 """
 

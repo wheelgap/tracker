@@ -38,6 +38,7 @@
       <ol class="platforms" id="platforms" aria-live="polite"></ol>
       <p class="legend">
         <span><i class="sw sw-wheel"></i> wheel</span>
+        <span id="legend-bundled" hidden><i class="sw sw-bundled"></i> bundled (no wheel on PyPI, but Pyodide ships its own build, often an older version)</span>
         <span><i class="sw sw-source"></i> builds from source</span>
         <span><i class="sw sw-missing"></i> can't install (no wheel, no source build)</span>
       </p>
@@ -76,9 +77,10 @@
   </main>
 
   <footer class="wrap">
-    <p>Each night, wheelgap checks the latest release of the top packages from <a href="https://hugovk.dev/top-pypi-packages/">top-pypi-packages</a> against every platform. Pyodide counts only wheels on PyPI; it also ships its own builds of many popular packages. <a href="data/coverage.json">Raw data</a> (CC0) · <a href="data/coverage.csv">CSV</a> · <a href="https://github.com/wheelgap/tracker#api-for-scripts-and-agents">Per-package JSON</a> · <a href="campaigns/">Campaigns</a> · <a href="https://github.com/wheelgap/tracker">Source</a> · <a href="https://github.com/wheelgap/wheelgap/discussions/43">Roadmap</a> · <a href="https://github.com/wheelgap/wheelgap/issues/new?template=bug_report.yml">Report a wrong result</a></p>
+    <p>Each night, wheelgap checks the latest release of the top packages from <a href="https://hugovk.dev/top-pypi-packages/">top-pypi-packages</a> against every platform. <span id="pyodide-note">Pyodide counts only wheels on PyPI; it also ships its own builds of many popular packages.</span> <a href="data/coverage.json">Raw data</a> (CC0) · <a href="data/coverage.csv">CSV</a> · <a href="https://github.com/wheelgap/tracker#api-for-scripts-and-agents">Per-package JSON</a> · <a href="campaigns/">Campaigns</a> · <a href="https://github.com/wheelgap/tracker">Source</a> · <a href="https://github.com/wheelgap/wheelgap/discussions/43">Roadmap</a> · <a href="https://github.com/wheelgap/wheelgap/issues/new?template=bug_report.yml">Report a wrong result</a></p>
   </footer>
 
+  <script src="logic.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

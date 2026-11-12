@@ -190,7 +190,8 @@ def current(notes: list[dict], package: dict, targets: list[dict]) -> list[dict]
     """The notes still worth showing for a package in this scan.
 
     A note is stale, and left out, when its versions don't match the scanned version, or when
-    every target of every platform it lists (each Python, free-threaded included) has a wheel.
+    every target of every platform it lists (each Python, free-threaded included) has a wheel, or on
+    Pyodide is `bundled` (Pyodide ships its own build).
     """
     results = package.get("results") or []
     every = {t.get("platform") for t in targets}
@@ -200,7 +201,7 @@ def current(notes: list[dict], package: dict, targets: list[dict]) -> list[dict]
             continue
         platforms = every if note["platforms"] == ["all"] else set(note["platforms"])
         listed = [r for t, r in zip(targets, results) if t.get("platform") in platforms]
-        if listed and all(r == "wheel" for r in listed):
+        if listed and all(r in ("wheel", "bundled") for r in listed):
             continue
         out.append(note)
     return out
