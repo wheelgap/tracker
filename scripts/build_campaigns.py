@@ -3,10 +3,11 @@
     python scripts/build_campaigns.py data/coverage.json data/history.json \
         data/changes.json campaigns.toml _site
 
-Writes <site>/campaigns/<id>/index.html for each campaign in the TOML file, and
-adds those URLs to <site>/sitemap.xml (created by build_pages.py, or written
-here if it is missing). Runs at publish time; the pages are not committed.
-The pages are plain HTML (no JavaScript) and reuse site/style.css.
+Writes <site>/campaigns/<id>/index.html for each campaign in the TOML file, an
+index of them at <site>/campaigns/index.html, and adds those URLs to
+<site>/sitemap.xml (created by build_pages.py, or written here if it is missing).
+Runs at publish time; the pages are not committed. The pages are plain HTML
+(no JavaScript) and reuse site/style.css.
 """
 
 from __future__ import annotations
@@ -318,7 +319,8 @@ def trend_html(rows: list[dict], label: str) -> str:
     )
 
 
-def page(campaign: dict, scan: dict, history: list, changes: list, python: str) -> str:
+def page(campaign: dict, scan: dict, history: list, changes: list, python: str) -> tuple[str, dict]:
+    """The campaign's page, and the numbers the campaigns index lists for it."""
     e = html.escape
     platform = campaign["platform"]
     top = campaign["top"]
@@ -369,6 +371,17 @@ def page(campaign: dict, scan: dict, history: list, changes: list, python: str) 
         else " (the newest non-free-threaded Python, as the badges use)"
     )
     generated = str(scan["generated"])[:10]
+    listing = {
+        "id": campaign["id"],
+        "title": title,
+        "platform": platform,
+        "platform_name": platform_name,
+        "python": python,
+        "share": share,
+        "wheels": wheels,
+        "total": total,
+        "todo": len(todo),
+    }
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -383,7 +396,7 @@ def page(campaign: dict, scan: dict, history: list, changes: list, python: str) 
 </head>
 <body>
   <header class="wrap">
-    <p class="eyebrow"><a href="../../">wheelgap tracker</a></p>
+    <p class="eyebrow"><a href="../../">wheelgap tracker</a> · <a href="../">Campaigns</a></p>
     <h1>{e(title)}</h1>
     <p class="lede">{e(lede)}</p>
     <p class="meta">From the wheelgap {e(str(scan["wheelgap"]))} scan of {e(generated)}, using Python {e(python)}{python_why}.</p>
@@ -402,6 +415,55 @@ def page(campaign: dict, scan: dict, history: list, changes: list, python: str) 
       <h2>Done</h2>
       <p class="note">Packages in the current top {top} that gained {e(article(platform_name))} {e(platform_name)} wheel on or after {e(campaign["start"])} and still have it, from the nightly change log (which keeps the last {CHANGES_KEPT_DAYS} days).</p>
 {rows_html(done, kind="done", include_source=False)}    </section>
+  </main>
+</body>
+</html>
+""", listing
+
+
+def index_page(listings: list[dict], generated: str, wheelgap: str) -> str:
+    """campaigns/index.html: every campaign in campaigns.toml, in file order."""
+    e = html.escape
+    rows = "\n".join(
+        f'          <tr><td><a href="{e(c["id"])}/">{e(c["title"])}</a></td>'
+        f'<td>{e(c["platform_name"])} <span class="ver">{e(c["platform"])}</span></td>'
+        f'<td>{e(c["python"])}</td>'
+        f'<td><strong>{e(c["share"])}</strong> <span class="ver">{c["wheels"]:,} of {c["total"]:,}</span></td>'
+        f'<td>{c["todo"]:,}</td></tr>'
+        for c in listings
+    )
+    count = len(listings)
+    summary = f"{count} wheel campaign{'' if count == 1 else 's'}: platform gaps among the most-downloaded PyPI packages, one list per platform."
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="{CSP}">
+  <title>Campaigns · wheelgap tracker</title>
+  <meta name="description" content="{e(summary)}">
+  <link rel="canonical" href="{e(BASE_URL)}campaigns/">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml">
+</head>
+<body>
+  <header class="wrap">
+    <p class="eyebrow"><a href="../">wheelgap tracker</a></p>
+    <h1>Campaigns</h1>
+    <p class="lede">Each campaign takes one platform and turns the missing wheels among the most-downloaded packages into a to-do list people can work through, one package at a time.</p>
+    <p class="meta">From the wheelgap {e(wheelgap)} scan of {e(generated)}.</p>
+  </header>
+  <main class="wrap">
+    <section>
+      <h2>All campaigns</h2>
+      <p class="note">Coverage is the share of each campaign's top packages with a wheel for its platform and Python. To do counts the packages that have wheels for that Python on other platforms but not this one.</p>
+        <div class="matrix-scroll"><table class="matrix">
+          <thead><tr><th>Campaign</th><th>Platform</th><th>Python</th><th>Coverage</th><th>To do</th></tr></thead>
+          <tbody>
+{rows}
+          </tbody>
+        </table></div>
+    </section>
   </main>
 </body>
 </html>
@@ -437,14 +499,21 @@ def build(coverage_path: Path, history_path: Path, changes_path: Path, config_pa
     changes = json.loads(changes_path.read_text(encoding="utf-8")) if changes_path.exists() else []
     campaigns = load_campaigns(config_path)
     newest = newest_non_free_threaded(scan["targets"])
-    urls: list[str] = []
+    urls: list[str] = [f"{BASE_URL}campaigns/"]
+    listings: list[dict] = []
     for campaign in campaigns:
         python = campaign.get("python") or newest
         ident = campaign["id"]
         out = site / "campaigns" / ident
         out.mkdir(parents=True, exist_ok=True)
-        (out / "index.html").write_text(page(campaign, scan, history, changes, python), encoding="utf-8")
+        text, listing = page(campaign, scan, history, changes, python)
+        (out / "index.html").write_text(text, encoding="utf-8")
+        listings.append(listing)
         urls.append(f"{BASE_URL}campaigns/{ident}/")
+    generated = str(scan["generated"])[:10]
+    (site / "campaigns" / "index.html").write_text(
+        index_page(listings, generated, str(scan["wheelgap"])), encoding="utf-8"
+    )
     add_to_sitemap(site, urls)
     return len(campaigns)
 
