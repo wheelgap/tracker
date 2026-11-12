@@ -147,7 +147,13 @@ class CampaignTests(unittest.TestCase):
         self.assertIn(
             '<a href="https://github.com/wheelgap/tracker/blob/main/notes/psycopg2.toml">has a note</a>', moved
         )
-        self.assertIn("0 still need one.", page)  # psycopg2 was the only to-do row
+        self.assertIn("0 to ask about.", page)  # psycopg2 was the only to-do row
+        self.assertIn(
+            "Nothing to ask about: every package here without the wheel has an alternative", self.todo(page)
+        )
+        self.assertNotIn("already has a wheel", page)
+        self.assertNotIn("A package with a note links it", page)  # the set-aside row doesn't count
+        self.assertIn("Packages set aside under Has an alternative stay on the starting list", page)
         self.assertIn("(1 more with an alternative is listed below)", page)
         index = (self.site / "campaigns" / "index.html").read_text(encoding="utf-8")
         self.assertIn("<td>0</td></tr>", index)
@@ -166,7 +172,8 @@ class CampaignTests(unittest.TestCase):
                 self.assertIn("notes/psycopg2.toml\">has a note</a>", todo)
                 self.assertIn("A package with a note links it", page)
                 self.assertNotIn("Has an alternative", page)
-                self.assertIn("1 still need one.", page)
+                self.assertIn("1 to ask about.", page)
+                self.assertNotIn("Packages set aside", page)
 
     def test_note_for_another_platform_or_version_is_ignored(self):
         # psycopg2 lacks a pyodide wheel too, so that note is current, just not for this campaign.
@@ -177,6 +184,33 @@ class CampaignTests(unittest.TestCase):
                 self.assertNotIn("has a note", page)
                 self.assertNotIn("Has an alternative", page)
                 self.assertNotIn("A package with a note links it", page)
+
+    def test_note_marker_href_is_escaped(self):
+        item = {"rank": 1, "name": "x", "version": "1", "status": "source", "canonical": "x",
+                "note": 'https://example.com/a?b=1&c="<x>'}
+        row = build_campaigns.rows_html([item], kind="todo", include_source=False)
+        self.assertIn('<a href="https://example.com/a?b=1&amp;c=&quot;&lt;x&gt;">has a note</a>', row)
+
+    def test_cli_reads_the_repo_notes(self):
+        # The CLI passes NOTES_DIR. Give the scan every platform the repo's psycopg2 note lists, so the
+        # checker accepts that file, and check its marker reaches the page.
+        note = build_campaigns.NOTES_DIR / "psycopg2.toml"
+        self.assertTrue(note.exists(), "this test relies on the repo's notes/psycopg2.toml")
+        known = {t["platform"] for t in self.scan["targets"]}
+        for platform in build_campaigns.PLATFORM_NAMES:
+            if platform not in known:
+                self.scan["targets"].append({"label": f"3.15 {platform}", "python": "3.15", "platform": platform})
+                for p in self.scan["packages"]:
+                    p["results"].append("unknown" if p["error"] else "wheel")
+        self.write_inputs()
+        subprocess.run(
+            [sys.executable, str(Path(build_campaigns.__file__)),
+             str(self.coverage), str(self.history), str(self.changes),
+             str(self.config), str(self.site)],
+            capture_output=True, text=True, check=True,
+        )
+        page = (self.site / "campaigns" / "musl-aarch64" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('notes/psycopg2.toml">has a note</a>', page)
 
     def test_lookup_errors_are_left_out_and_said(self):
         page = self.built_page()

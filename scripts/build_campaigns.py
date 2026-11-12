@@ -431,10 +431,10 @@ def article(name: str) -> str:
     return "an" if name[:1].lower() in "aeiou" else "a"
 
 
-def rows_html(items: list[dict], *, kind: str, include_source: bool) -> str:
+def rows_html(items: list[dict], *, kind: str, include_source: bool, empty: str = "") -> str:
     e = html.escape
     if not items:
-        empty = "None yet." if kind == "done" else "Every package in the set already has a wheel."
+        empty = empty or ("None yet." if kind == "done" else "Every package in the set already has a wheel.")
         return f'        <p class="note">{empty}</p>\n'
     head = "<th>Rank</th><th>Package</th><th>Status</th>"
     if kind == "done":
@@ -557,7 +557,8 @@ def page(
             item["note"] = f"{NOTES_URL}{item['canonical']}.toml"
         if any(note["kind"] in SET_ASIDE_KINDS for note in found):
             set_aside.append(item)
-    todo = [item for item in todo if item not in set_aside]
+    set_aside_names = {item["name"] for item in set_aside}
+    todo = [item for item in todo if item["name"] not in set_aside_names]
     recorded = baseline is not None
     if baseline is None:
         baseline = baseline_for(campaign, scan, changes, python)
@@ -568,7 +569,7 @@ def page(
     url = f"{BASE_URL}campaigns/{campaign['id']}/"
     summary = (
         f"{wheels} of the top {top} packages ship {article(platform_name)} {platform_name} wheel on Python {python} "
-        f"({share}). {len(todo)} still need one."
+        f"({share}). {len(todo)} to ask about."
     )
     lede = campaign.get("description") or (
         f"This page turns the {platform_name} ({platform}) gaps among the most-downloaded packages into a list "
@@ -585,11 +586,12 @@ def page(
             "campaign should ask about.</p>\n"
         )
     read_notes = " A package with a note links it: read the note first." if any(i.get("note") for i in todo) else ""
-    set_aside_count = set_aside_html = ""
+    set_aside_count = set_aside_html = todo_empty = ""
     if set_aside:
         one = len(set_aside) == 1
         set_aside_count = f" ({len(set_aside)} more with an alternative {'is' if one else 'are'} listed below)"
         not_counted = "It isn't" if one else "They aren't"
+        todo_empty = "Nothing to ask about: every package here without the wheel has an alternative, listed below."
         set_aside_html = (
             "    <section>\n"
             "      <h2>Has an alternative</h2>\n"
@@ -647,6 +649,11 @@ def page(
             f"from the nightly change log, which keeps the last {CHANGES_KEPT_DAYS} days and skips nights when "
             "the scan moved to a new wheelgap version. Was is the status at the start."
         )
+        if set_aside:
+            done_note += (
+                " Packages set aside under Has an alternative stay on the starting list, so To do and Done "
+                "needn't add up to it."
+            )
     generated = str(scan["generated"])[:10]
     listing = {
         "id": campaign["id"],
@@ -687,7 +694,7 @@ def page(
     <section>
       <h2>To do</h2>
       <p class="note">{len(todo)} of the top {top} packages have Python {e(python)} wheels for other platforms but not {e(platform_name)}, most-downloaded first{set_aside_count}.{read_notes} {e(ASK_FIRST)}{how_to_html}</p>
-{rows_html(todo, kind="todo", include_source=include_source)}{waiting_html}    </section>
+{rows_html(todo, kind="todo", include_source=include_source, empty=todo_empty)}{waiting_html}    </section>
 {set_aside_html}    <section>
       <h2>Done</h2>
       <p>{progress}</p>
