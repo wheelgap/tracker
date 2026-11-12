@@ -309,6 +309,112 @@ class CampaignTests(unittest.TestCase):
         self.assertIn("<td>from source</td>", done)
         self.assertIn("keeps the last 90 days", done)
 
+    def write_baseline(self, **fields):
+        baseline = {
+            "schema": 1, "campaign": "musl-aarch64", "target": "3.15 musl-aarch64", "top": 5,
+            "start": "2026-08-01", "recorded": "2026-08-01", "wheelgap": "0.5.0",
+            "packages": [
+                {"name": "NumPy", "rank": 1, "status": "source"},
+                {"name": "psycopg2", "rank": 2, "status": "source"},
+                {"name": "newpy", "rank": 4, "status": "missing"},
+            ],
+        }
+        baseline.update(fields)
+        (self.root / "campaigns").mkdir(exist_ok=True)
+        (self.root / "campaigns" / "musl-aarch64.json").write_text(json.dumps(baseline), encoding="utf-8")
+
+    def done(self, page: str) -> str:
+        return page.split(">Done</h2>", 1)[1]
+
+    def test_done_comes_from_the_recorded_baseline(self):
+        self.write_baseline()
+        done = self.done(self.built_page())
+        # NumPy has the wheel now; its latest gain (11 Nov) is still in the change log.
+        self.assertIn("<td>2026-11-11</td>", done)
+        self.assertIn("NumPy", done)
+        # psycopg2 never gained it; newpy gained it on 11 Nov and lost it again.
+        self.assertNotIn("psycopg2", done)
+        self.assertNotIn("newpy", done)
+        self.assertIn("<strong>1 of the 3</strong> packages on the to-do list at the start (2026-08-01) now have", done)
+        self.assertIn("recorded from the 2026-08-01 scan in data/campaigns/musl-aarch64.json", done)
+        self.assertIn("<td>from source</td>", done)
+
+    def test_gain_older_than_the_change_log_still_counts_as_done(self):
+        self.write_baseline()
+        # NumPy's gain has aged out of the 90-day log: it's still done, dated before the oldest night kept.
+        for entry in self.changes_data:
+            entry["gained"] = [g for g in entry["gained"] if g["name"] != "NumPy"]
+        done = self.done(self.built_page())
+        self.assertIn("NumPy", done)
+        self.assertIn("<td>before 2026-11-09</td>", done)
+        self.assertIn("<strong>1 of the 3</strong>", done)
+
+    def test_gain_on_a_night_the_log_skipped(self):
+        # The log covers the whole campaign but has no gain for NumPy (a wheelgap upgrade night).
+        self.write_baseline(start="2026-11-10", recorded="2026-11-10")
+        for entry in self.changes_data:
+            entry["gained"] = [g for g in entry["gained"] if g["name"] != "NumPy"]
+        done = self.done(self.built_page())
+        self.assertIn("<td>not in the log</td>", done)
+
+    def test_baseline_for_another_target_is_said(self):
+        self.write_baseline(target="3.14 musl-aarch64")
+        done = self.done(self.built_page())
+        self.assertIn("It was recorded for 3.14 musl-aarch64; progress is measured on 3.15 musl-aarch64.", done)
+
+    def test_bad_baseline_is_rejected(self):
+        for fields in ({"schema": 2}, {"packages": [{"rank": 1}]}, {"start": None}):
+            with self.subTest(fields=fields):
+                self.write_baseline(**fields)
+                self.write_inputs()
+                with self.assertRaises(SystemExit):
+                    build_campaigns.build(self.coverage, self.history, self.changes, self.config, self.site)
+
+    def test_without_a_baseline_the_page_says_so(self):
+        done = self.done(self.built_page())
+        self.assertIn("isn't recorded yet", done)
+        # Today's to-do (psycopg2) plus gains since the start (NumPy, and newpy, which lost it again).
+        self.assertIn("<strong>1 of the 3</strong>", done)
+
+    def test_record_baselines_writes_each_campaign_once(self):
+        self.write_inputs()
+        out = self.root / "campaigns"
+        self.assertEqual(build_campaigns.record_baselines(self.coverage, self.changes, self.config, out), ["musl-aarch64"])
+        path = out / "musl-aarch64.json"
+        baseline = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(baseline["target"], "3.15 musl-aarch64")
+        self.assertEqual(baseline["start"], "2026-11-10")
+        self.assertEqual(baseline["recorded"], "2026-11-11")
+        # psycopg2 is to do today; NumPy and newpy gained the wheel on 11 Nov, after the 10 Nov start
+        # (NumPy's 9 Nov gain is before it). Not outside-top (rank 6) or failed (no lookup).
+        self.assertEqual(
+            baseline["packages"],
+            [{"name": "NumPy", "rank": 1, "status": "source"},
+             {"name": "psycopg2", "rank": 2, "status": "source"},
+             {"name": "newpy", "rank": 4, "status": "missing"}],
+        )
+        # Never rewritten, even when the scan changes.
+        before = path.read_text(encoding="utf-8")
+        self.scan["packages"][1]["results"][3] = "wheel"
+        self.write_inputs()
+        self.assertEqual(build_campaigns.record_baselines(self.coverage, self.changes, self.config, out), [])
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+        # The page build picks it up from next to coverage.json; psycopg2 now has the wheel too.
+        done = self.done((self.built_page()))
+        self.assertIn("recorded from the 2026-11-11 scan", done)
+        self.assertIn("<strong>2 of the 3</strong>", done)
+
+    def test_cli_records_baselines(self):
+        self.write_inputs()
+        out = self.root / "baselines"
+        result = subprocess.run(
+            [sys.executable, str(Path(build_campaigns.__file__)), "--record-baselines",
+             str(self.coverage), str(self.changes), str(self.config), str(out)],
+            capture_output=True, text=True, check=True,
+        )
+        self.assertIn("recorded musl-aarch64 baseline", result.stdout)
+        self.assertTrue((out / "musl-aarch64.json").exists())
+
     def test_ask_upstream_and_how_to_link_and_no_javascript(self):
         page = self.built_page()
         self.assertIn("Pick one package, not a list", page)
