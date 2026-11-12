@@ -210,7 +210,8 @@ def trend(history: list[dict], label: str, start: str) -> list[dict]:
     If no night with this label is on or after start yet, the latest one is returned on its own.
     A row's "upgrade" is its wheelgap version when that differs from the version of the previous
     row for this label (even if that row is before start), else "". A night without the label, or
-    without a version, doesn't change what the next row is compared with.
+    without a version, doesn't change what the next row is compared with. Like the campaign's coverage
+    (has_wheel), a count includes `bundled`, Pyodide's own builds; only a pyodide target has any.
     """
     rows = []
     previous = ""
@@ -222,7 +223,7 @@ def trend(history: list[dict], label: str, start: str) -> list[dict]:
         upgrade = version if previous and version and version != previous else ""
         previous = version or previous
         packages = entry.get("packages") or 0
-        wheels = cell.get("wheel", 0)
+        wheels = cell.get("wheel", 0) + cell.get("bundled", 0)
         rows.append({
             "date": entry["date"],
             "wheels": wheels,
@@ -312,7 +313,7 @@ def baseline_for(campaign: dict, scan: dict, changes: list[dict], python: str) -
         then = {
             i: status_at_start(changes, key, targets[i]["label"], start, package["results"][i]) for i in indexes
         }
-        if then[index] in INSTALLABLE or not any(then[i] in INSTALLABLE for i in indexes if i != index):
+        if then[index] == "wheel" or not any(then[i] == "wheel" for i in indexes if i != index):
             continue
         rows[key] = {"name": package["name"], "rank": package["rank"], "status": then[index]}
     return {

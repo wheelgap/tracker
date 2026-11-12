@@ -1,4 +1,5 @@
 "use strict";
+// Uses the helpers in logic.js (installable, platformStats, bundledDetail, ...), loaded before this file.
 
 const PLATFORM_NAMES = {
   "linux-x86_64": ["Linux x86_64", "glibc · manylinux"],
@@ -13,30 +14,23 @@ const PLATFORM_NAMES = {
 };
 const platformName = (p) => (Object.hasOwn(PLATFORM_NAMES, p) ? PLATFORM_NAMES[p] : [p, ""]);
 const STATUS_TEXT = { wheel: "wheel", bundled: "bundled", source: "from source", missing: "can't install", unknown: "unknown" };
-// A wheel, or Pyodide's own build of the package (wheelgap --pyodide-lock): either way it installs without a build.
-const INSTALLABLE = new Set(["wheel", "bundled"]);
-// Same text as BUNDLED_NOTE in scripts/build_pages.py.
-const BUNDLED_NOTE = "bundled: Pyodide ships its own build of this package, so it installs there without a wheel on PyPI.";
 const PAGE = 50;
 
 const $ = (id) => document.getElementById(id);
 const fmt = (n) => (typeof n === "number" ? n.toLocaleString("en-GB") : String(n ?? ""));
-const pct = (n, d) => (d ? (100 * n) / d : 0).toFixed(1);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
-const state = { data: null, history: [], python: null, platform: "musl-aarch64", shown: PAGE };
+// pyodide: data/pyodide.json through pyodideReleases(), {python: {pyodide, lock}} for each pinned Pyodide release.
+const bundledCache = new Map(); // canonical name -> bundledInfo() of its data/packages/<name>.json
+const state = { data: null, history: [], pyodide: {}, python: null, platform: "musl-aarch64", shown: PAGE };
 
 function pythons() {
   return [...new Set(state.data.targets.map((t) => t.python))];
 }
 
-// The scan counted Pyodide's own builds as `bundled` for this Python (it had a --pyodide-lock for it).
-function hasPyodideLock(python) {
-  return (state.data.pyodide_locks ?? []).some((lock) => lock && lock.python === python);
-}
-
 function platformDetail(t) {
-  if (t.platform === "pyodide" && hasPyodideLock(t.python)) return "wasm32 · PyPI wheels and Pyodide's builds";
+  const release = t.platform === "pyodide" ? state.pyodide[t.python] : null;
+  if (release) return `wasm32 · PyPI wheels and Pyodide ${release.pyodide}'s builds`;
   return platformName(t.platform)[1];
 }
 
@@ -55,12 +49,11 @@ function renderMeta() {
   $("pure-note").textContent =
     `${fmt(pure)} of the ${fmt(d.packages.length)} are pure Python and install everywhere; ` +
     `the gaps are among the ${fmt(d.packages.length - pure)} with compiled code.`;
-  const locks = (d.pyodide_locks ?? []).filter((lock) => lock && typeof lock.python === "string");
-  if (locks.length) {
+  const anyBundled = Object.values(d.summary ?? {}).some((s) => s && s.bundled > 0);
+  const footer = pyodideFooter(state.pyodide, anyBundled);
+  if (footer) {
     $("legend-bundled").hidden = false;
-    $("pyodide-note").textContent =
-      `Pyodide also ships its own builds of many popular packages: on Python ${locks.map((l) => l.python).join(" and ")}, ` +
-      "those count as bundled, since they install there without a wheel on PyPI.";
+    $("pyodide-note").textContent = footer;
   }
   $("package-names").innerHTML = d.packages.map((p) => `<option value="${esc(p.name)}">`).join("");
 }
@@ -84,22 +77,17 @@ function renderPlatforms() {
     .map((t) => {
       const s = d.summary[t.label];
       const [name] = platformName(t.platform);
-      const bundled = s.bundled ?? 0;
-      const ok = s.wheel + bundled; // installs without a build
-      const prev = previousSummary(t.label);
-      // A previous scan that counted nothing as bundled here (no --pyodide-lock yet) isn't like for like.
-      const comparable = prev && !(bundled && !prev.bundled);
-      const delta = comparable ? ok - (prev.wheel + (prev.bundled ?? 0)) : 0;
+      const { bundled, ok, delta, percent, widths } = platformStats(s, previousSummary(t.label), n);
       const trend = delta ? ` <small>${delta > 0 ? "+" : ""}${delta} since last scan</small>` : "";
-      const seg = (k) => `<span class="b-${k}" style="width:${pct(s[k] ?? 0, n)}%"></span>`;
+      const seg = (k) => `<span class="b-${k}" style="width:${widths[k].toFixed(1)}%"></span>`;
       const counts = [`${fmt(s.wheel)} wheel`, ...(bundled ? [`${fmt(bundled)} bundled with Pyodide`] : []),
         `${fmt(s.source)} from source`, `${fmt(s.missing)} can't install`].join(" · ");
       return `<li><button data-platform="${esc(t.platform)}" aria-pressed="${t.platform === state.platform}"
-          aria-label="${esc(name)}: ${pct(ok, n)}% have a wheel${bundled ? " or a Pyodide build" : ""}">
+          aria-label="${esc(name)}: ${percent.toFixed(1)}% have a wheel${bundled ? " or a Pyodide build" : ""}">
         <span class="pname">${esc(name)}<small>${esc(platformDetail(t))}</small></span>
         <span class="bar" title="${esc(counts)}">
           ${seg("wheel")}${seg("bundled")}${seg("source")}${seg("missing")}${seg("unknown")}</span>
-        <span class="pct">${pct(ok, n)}%<small>${fmt(n - ok)} without${trend}</small></span>
+        <span class="pct">${percent.toFixed(1)}%<small>${fmt(n - ok)} without${trend}</small></span>
       </button></li>`;
     });
   $("platforms").innerHTML = rows.join("");
@@ -160,7 +148,7 @@ function renderTrends() {
   $("trend-note").textContent = rows
     ? `Share of packages with a wheel for Python ${state.python}, one point per nightly scan from ${dates[0]} to ${dates[dates.length - 1]}. Each chart is scaled to its own range.` +
       // Wheels only, so the line doesn't jump on the night the scan started counting Pyodide's builds.
-      (hasPyodideLock(state.python) ? " On Pyodide that's PyPI wheels only: the bars above also count Pyodide's own builds." : "")
+      (state.pyodide[state.python] ? " On Pyodide that's PyPI wheels only: the bars above also count Pyodide's own builds." : "")
     : "";
 }
 
@@ -173,7 +161,7 @@ function renderGaps() {
     $("more").hidden = true;
     return;
   }
-  const gaps = state.data.packages.filter((p) => !INSTALLABLE.has(p.results[i]));
+  const gaps = gapsAt(state.data.packages, i);
   $("gaps").innerHTML =
     gaps
       .slice(0, state.shown)
@@ -199,7 +187,8 @@ function badgeMarkdown(p) {
   return `[![wheels](${badge})](${link})`;
 }
 
-function renderLookup(query) {
+// extra is bundledInfo() of the package's data/packages/<name>.json, fetched after a first render without it.
+function renderLookup(query, extra = null) {
   const q = canonicalName(query.trim());
   if (!q) {
     $("lookup").innerHTML = "";
@@ -217,7 +206,9 @@ function renderLookup(query) {
     const i = targetIndex(py, pl);
     if (i < 0) return `<td><span class="status s-none">n/a</span></td>`;
     const s = p.results[i];
-    return `<td><span class="status s-${esc(s)}">${esc(STATUS_TEXT[s] ?? s)}</span></td>`;
+    const detail = s === "bundled" && extra ? bundledDetail(extra[state.data.targets[i].label]) : "";
+    const small = detail ? `<small class="bver">${esc(detail)}</small>` : "";
+    return `<td><span class="status s-${esc(s)}">${esc(STATUS_TEXT[s] ?? s)}</span>${small}</td>`;
   };
   $("lookup").innerHTML = `<div class="card">
     <h3>${esc(p.name)} <span class="ver">${esc(p.version ?? "")}</span></h3>
@@ -234,7 +225,7 @@ function renderLookup(query) {
     ${
       targetIndex(state.python, state.platform) < 0
         ? ""
-        : `<p class="sub" style="margin:12px 0 0">Why? <code>uvx wheelgap ${esc(p.name)}==${esc(p.version ?? "")} -p ${esc(state.python)} -t ${esc(state.platform)} --explain</code></p>`
+        : `<p class="sub" style="margin:12px 0 0">Why? <code>${esc(whyCommand(p.name, p.version, state.python, state.platform, state.pyodide))}</code></p>`
     }
     <div class="badge-snippet">
       <p class="sub">Badge for your README</p>
@@ -256,6 +247,24 @@ function renderLookup(query) {
         copy.textContent = "Select and copy";
       }
     });
+  }
+  // Which version Pyodide ships is in the package's own file; show the card now and add it when it arrives.
+  if (extra === null && !p.error && p.results.includes("bundled")) {
+    const cached = bundledCache.get(q);
+    const got = cached
+      ? Promise.resolve(cached)
+      : fetch(`data/packages/${encodeURIComponent(q)}.json`)
+          .then((r) => (r.ok ? r.json() : null))
+          .then((json) => {
+            const info = bundledInfo(json);
+            bundledCache.set(q, info);
+            return info;
+          });
+    got
+      .then((info) => {
+        if (canonicalName($("search").value.trim()) === q) renderLookup(query, info);
+      })
+      .catch(() => {}); // the card already shows "bundled"; it just goes without the version
   }
 }
 
@@ -282,11 +291,13 @@ function renderAll() {
 }
 
 async function main() {
-  const [data, hist] = await Promise.all([
+  const [data, hist, pyodide] = await Promise.all([
     fetch("data/coverage.json").then((r) => r.json()),
     fetch("data/history.json").then((r) => (r.ok ? r.json() : [])).catch(() => []),
+    fetch("data/pyodide.json").then((r) => (r.ok ? r.json() : null)).catch(() => null),
   ]);
   state.data = data;
+  state.pyodide = pyodideReleases(pyodide);
   state.history = Array.isArray(hist) ? hist.filter((h) => h && typeof h === "object") : [];
   state.python = pythons()[0];
   const pkg = readHash();

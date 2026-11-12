@@ -27,4 +27,7 @@ jobs:
         # Stdlib only; validates notes/*.toml against data/coverage.json.
         run: python3 scripts/check_notes.py
       - name: Site syntax
-        run: node --check site/app.js
+        run: node --check site/logic.js && node --check site/app.js
+      - name: Site logic
+        # The runner's own node; node:test needs nothing installed.
+        run: node --test tests/site/logic.test.js

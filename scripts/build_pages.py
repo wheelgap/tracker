@@ -5,7 +5,8 @@
 Writes <site>/p/<name>/index.html for each package (PEP 503 canonical name) and
 <site>/sitemap.xml listing the main page and every package page. Each page shows
 the package's current notes from notes_dir (default: the repository's notes/) and,
-when it has a gap, an "Add a note" link. Runs at publish time; the files are not
+when it has a gap, an "Add a note" link. A `bundled` cell says which version Pyodide ships
+(from the committed lock files, see pyodide_locks.py). Runs at publish time; the files are not
 committed. The pages are plain HTML (no JavaScript) and reuse site/style.css, so
 search engines can find "does <package> have ARM wheels".
 """
@@ -20,9 +21,10 @@ from pathlib import Path
 from urllib.parse import quote
 
 if __package__:  # imported as scripts.build_pages (the tests)
-    from . import check_notes
+    from . import check_notes, pyodide_locks
 else:  # run as python scripts/build_pages.py
     import check_notes
+    import pyodide_locks
 
 SCAN_SCHEMA = 1
 SAFE_NAME = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
@@ -57,8 +59,11 @@ STATUS_TEXT = {
     "missing": "can't install",
     "unknown": "unknown",
 }
-# Under the table when a result is `bundled` (wheelgap --pyodide-lock); same text as BUNDLED_NOTE in site/app.js.
-BUNDLED_NOTE = "bundled: Pyodide ships its own build of this package, so it installs there without a wheel on PyPI."
+# Under the table when a result is `bundled` (wheelgap --pyodide-lock); same text as BUNDLED_NOTE in site/logic.js.
+BUNDLED_NOTE = (
+    "bundled: there's no wheel on PyPI for Pyodide, but Pyodide ships its own build of this package, often an "
+    "older version than the one shown here. The cell names the Pyodide release and the version it ships."
+)
 # No scripts, fetches or frames: only the stylesheet, the favicon and the inline style on the lines under the table.
 CSP = "default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'none'"
 
@@ -175,10 +180,18 @@ def notes_html(notes: list[dict], name: str, gaps: list[str], today: str, exists
 
 
 def page(
-    package: dict, scan: dict, python: str, notes: list[dict] | None = None, note_file: bool = False
+    package: dict,
+    scan: dict,
+    python: str,
+    notes: list[dict] | None = None,
+    note_file: bool = False,
+    found: dict[str, dict] | None = None,
 ) -> str:
     """The package's page. notes are its notes from notes/ (stale ones are left out here);
-    note_file says whether notes/<name>.toml exists, so "Add a note" opens the editor instead."""
+    note_file says whether notes/<name>.toml exists, so "Add a note" opens the editor instead.
+    found is pyodide_locks.releases(scan): the Pyodide release behind each Python's bundled cells."""
+    found = found or {}
+    bundled = pyodide_locks.bundled(package, scan["targets"], found)
     targets = scan["targets"]
     pys = list(dict.fromkeys(t["python"] for t in targets))
     platforms = [pl for pl in PLATFORM_NAMES if any(t["platform"] == pl for t in targets)]
@@ -196,7 +209,9 @@ def page(
         if i is None:
             return '<td><span class="status s-none">n/a</span></td>'
         s = package["results"][i]
-        return f'<td><span class="status s-{e(s)}">{e(STATUS_TEXT.get(s, s))}</span></td>'
+        detail = pyodide_locks.describe(bundled.get(targets[i]["label"])) if s == "bundled" else ""
+        small = f'<small class="bver">{e(detail)}</small>' if detail else ""
+        return f'<td><span class="status s-{e(s)}">{e(STATUS_TEXT.get(s, s))}</span>{small}</td>'
 
     rows = "\n".join(
         f'          <tr><th scope="row">{e(PLATFORM_NAMES[pl])}</th>{"".join(cell(py, pl) for py in pys)}</tr>'
@@ -209,6 +224,8 @@ def page(
         sub += f" · lookup failed: {e(package['error'])}"
     sub += f' · <a href="https://pypi.org/project/{e(name)}/">PyPI</a>'
     explain = f"uvx wheelgap {name}=={version} -p {python} -t all --explain" if version else ""
+    if explain and python in found:  # so its pyodide result counts Pyodide's own builds, as the table does
+        explain += f" --pyodide-lock {found[python]['url']}"
     why = f'\n      <p class="sub" style="margin:12px 0 0">Why? <code>{e(explain)}</code></p>' if explain else ""
     if not package.get("error") and "bundled" in package["results"]:
         why = f'\n      <p class="sub" style="margin:12px 0 0">{e(BUNDLED_NOTE)}</p>{why}'
@@ -253,13 +270,17 @@ def page(
 """
 
 
-def build(coverage_path: Path, site: Path, notes_dir: Path | None = None) -> int:
-    """Write the pages and the sitemap; notes come from notes_dir, or none when it is None."""
+def build(
+    coverage_path: Path, site: Path, notes_dir: Path | None = None, root: Path = pyodide_locks.ROOT
+) -> int:
+    """Write the pages and the sitemap; notes come from notes_dir, or none when it is None.
+    root holds pyodide/locks.json and the lock files it names."""
     scan = json.loads(coverage_path.read_text(encoding="utf-8"))
     if scan.get("schema") != SCAN_SCHEMA:
         sys.exit(f"build_pages: coverage.json schema {scan.get('schema')!r}, expected {SCAN_SCHEMA}")
     notes = check_notes.load(notes_dir, scan) if notes_dir is not None else {}
     python = newest_non_free_threaded(scan["targets"])
+    found = pyodide_locks.releases(scan, root)
     names: list[str] = []
     seen: set[str] = set()
     for p in scan["packages"]:
@@ -272,7 +293,7 @@ def build(coverage_path: Path, site: Path, notes_dir: Path | None = None) -> int
         out = site / "p" / name
         out.mkdir(parents=True, exist_ok=True)
         note_file = notes_dir is not None and (notes_dir / f"{name}.toml").exists()
-        text = page(p, scan, python, notes.get(name), note_file)
+        text = page(p, scan, python, notes.get(name), note_file, found)
         (out / "index.html").write_text(text, encoding="utf-8")
     urls = [BASE_URL] + [f"{BASE_URL}p/{name}/" for name in names]
     sitemap = "".join(f"  <url><loc>{html.escape(u)}</loc></url>\n" for u in urls)

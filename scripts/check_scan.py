@@ -2,9 +2,13 @@
 
     python scripts/check_scan.py data/coverage.json data/history.json 5000
 
-Checks: the shape scripts/build_lookup.py needs, results the scripts know (`bundled` only on a pyodide
-target), enough packages, every target summarised, few lookup errors, and no target's wheel count
-dropping sharply since the last entry in the history (a PyPI outage, not a real change).
+Checks: the shape scripts/build_lookup.py needs, results the scripts know, enough packages, every
+target summarised, few lookup errors, and no target's wheel or bundled count dropping sharply since
+the last entry in the history (a PyPI outage, not a real change).
+
+For `bundled` (wheelgap --pyodide-lock): it's only on pyodide targets, the scan's pyodide_locks are
+well formed and are the committed lock files listed in pyodide/locks.json (pyodide_locks.py), each
+target with a bundled cell has one for its Python, and every bundled package is in that lock.
 """
 
 from __future__ import annotations
@@ -13,6 +17,11 @@ import json
 import os
 import sys
 from pathlib import Path
+
+if __package__:  # imported as scripts.check_scan (the tests)
+    from . import pyodide_locks
+else:  # run as python scripts/check_scan.py
+    import pyodide_locks
 
 MIN_PACKAGE_SHARE = 0.95
 MAX_ERROR_SHARE = 0.05
@@ -24,7 +33,30 @@ MAX_DROP = 0.10
 STATUSES = ("wheel", "source", "missing", "unknown", "bundled", "n/a")
 
 
-def problems(scan: dict, history: list[dict], top: int) -> list[str]:
+def bundled_problems(scan: dict, root: Path) -> list[str]:
+    out = pyodide_locks.scan_locks_problems(scan)
+    if out:
+        return out
+    found = pyodide_locks.releases(scan, root, warn=out.append)
+    targets = scan.get("targets", [])
+    for i, target in enumerate(targets):
+        cells = [p for p in scan.get("packages", []) if p["results"][i] == "bundled"]
+        if not cells:
+            continue
+        release = found.get(target.get("python"))
+        if release is None:
+            out.append(
+                f"{target['label']}: {len(cells)} bundled but no pyodide_locks entry from {pyodide_locks.MANIFEST}"
+            )
+            continue
+        strays = [p["name"] for p in cells if pyodide_locks.canonical(p["name"]) not in release["packages"]]
+        if strays:
+            names = ", ".join(strays[:5])
+            out.append(f"{target['label']}: bundled but not in Pyodide {release['pyodide']}'s lock: {names}")
+    return out
+
+
+def problems(scan: dict, history: list[dict], top: int, root: Path = pyodide_locks.ROOT) -> list[str]:
     out = []
     n = len(scan.get("packages", []))
     if n < MIN_PACKAGE_SHARE * top:
@@ -38,6 +70,7 @@ def problems(scan: dict, history: list[dict], top: int) -> list[str]:
     if scan.get("schema") != 1:
         out.append(f"schema {scan.get('schema')!r}, expected 1 (update scripts/build_lookup.py first)")
     fields = ("name", "version", "rank", "pure", "error", "results")
+    before_entries = len(out)
     for p in scan.get("packages", []):
         if any(f not in p for f in fields) or not isinstance(p.get("name"), str):
             out.append(f"package entry missing fields: {p.get('name')!r}")
@@ -52,18 +85,22 @@ def problems(scan: dict, history: list[dict], top: int) -> list[str]:
         if any(r == "bundled" and not on_pyodide for r, on_pyodide in zip(p["results"], pyodide)):
             out.append(f"{p['name']}: bundled on a target that isn't pyodide")
             break
+    if len(out) == before_entries:  # the package entries are well formed, so their results can be read
+        out += bundled_problems(scan, root)
     errors = scan.get("lookup_errors", sum(1 for p in scan.get("packages", []) if p.get("error")))
     if n and errors > MAX_ERROR_SHARE * n:
         out.append(f"{errors} of {n} lookups failed")
     if history and not os.environ.get("ALLOW_DROP"):
         previous = history[-1].get("summary", {})
         for label, counts in scan.get("summary", {}).items():
-            before = previous.get(label, {}).get("wheel")
-            if before and counts.get("wheel", 0) < (1 - MAX_DROP) * before:
-                out.append(
-                    f"{label}: wheels fell from {before} to {counts.get('wheel', 0)} "
-                    "(if that's real, run the workflow by hand with allow_drop)"
-                )
+            # bundled too: losing a lock (or most of one) would otherwise just turn Pyodide's builds into gaps.
+            for kind, noun in (("wheel", "wheels"), ("bundled", "bundled")):
+                before = previous.get(label, {}).get(kind)
+                if before and counts.get(kind, 0) < (1 - MAX_DROP) * before:
+                    out.append(
+                        f"{label}: {noun} fell from {before} to {counts.get(kind, 0)} "
+                        "(if that's real, run the workflow by hand with allow_drop)"
+                    )
     return out
 
 

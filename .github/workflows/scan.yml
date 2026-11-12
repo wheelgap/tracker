@@ -17,7 +17,7 @@ on:
         type: boolean
         default: true
       allow_drop:
-        description: Accept a scan whose wheel counts fell more than 10% (a genuine change, not an outage)
+        description: Accept a scan whose wheel or bundled counts fell more than 10% (a genuine change, not an outage)
         type: boolean
         default: false
   push:
@@ -31,11 +31,14 @@ env:
   # The wheelgap release that produces the data. Bump it to pick up new targets.
   WHEELGAP: "wheelgap==0.9.0"
   # The Pyodide releases whose own builds count as `bundled` (--pyodide-lock), one per Python the scan has a
-  # pyodide target for. Pinned like WHEELGAP, so a Pyodide release doesn't change the results unannounced:
-  # bump them on purpose, to the newest release for that Python. Python 3.13 is Pyodide 0.29.x and 3.14 is
-  # Pyodide 314.0.x. Pyodide for 3.15 is only in alpha so far, and the scan has no 3.15 pyodide target.
-  PYODIDE_LOCK_313: "https://cdn.jsdelivr.net/pyodide/v0.29.5/full/pyodide-lock.json"
-  PYODIDE_LOCK_314: "https://cdn.jsdelivr.net/pyodide/v314.0.7/full/pyodide-lock.json"
+  # pyodide target for. Each is a committed copy of the release's pyodide-lock.json, listed with its URL and
+  # sha256 in pyodide/locks.json, so the scan never depends on a CDN and a Pyodide release doesn't change the
+  # results unannounced; the publish step reads the same files to show which version Pyodide ships. Python
+  # 3.13 is Pyodide 0.29.x and 3.14 is Pyodide 314.0.x. Pyodide for 3.15 is only in alpha so far, and the
+  # scan has no 3.15 pyodide target. To bump one, add the new file and manifest entry and keep the old file
+  # until a scan has run with the new one (the published data names the file it used).
+  PYODIDE_LOCK_313: "pyodide/0.29.5-pyodide-lock.json"
+  PYODIDE_LOCK_314: "pyodide/314.0.7-pyodide-lock.json"
   TOP: "5000"
 
 jobs:
