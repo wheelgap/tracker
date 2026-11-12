@@ -161,14 +161,21 @@ def not_started(package: dict, indexes: list[int]) -> bool:
     return not package.get("error") and not any(package["results"][i] == "wheel" for i in indexes)
 
 
-def trend(history: list[dict], label: str) -> list[dict]:
-    """Per-day wheel counts for a target label, across the whole nightly scan.
+def trend(history: list[dict], label: str, start: str) -> list[dict]:
+    """Per-day wheel counts for a target label, across the whole nightly scan, from the campaign's start.
 
     history.json only stores those full-scan totals, not a top-N slice, so the
     trend is labelled as the nightly scan rather than the campaign's top N.
+    If no night is on or after start yet, the latest one is returned on its own.
+    A row's "upgrade" is the night's wheelgap version when it differs from the
+    night before's (even if that night is before start), else "".
     """
     rows = []
+    previous = None
     for entry in history:
+        version = str(entry.get("wheelgap") or "")
+        upgrade = version if previous and version and version != previous else ""
+        previous = version or previous
         cell = entry.get("summary", {}).get(label)
         if not cell:
             continue
@@ -179,8 +186,10 @@ def trend(history: list[dict], label: str) -> list[dict]:
             "wheels": wheels,
             "packages": packages,
             "percent": (100.0 * wheels / packages) if packages else 0.0,
+            "upgrade": upgrade,
         })
-    return rows
+    since = [r for r in rows if r["date"] >= start]
+    return since or rows[-1:]
 
 
 def todo_list(packages: list[dict], index: int, indexes: list[int]) -> list[dict]:
@@ -299,21 +308,36 @@ def rows_html(items: list[dict], *, kind: str, include_source: bool) -> str:
     )
 
 
-def trend_html(rows: list[dict], label: str) -> str:
+def trend_html(rows: list[dict], label: str, start: str) -> str:
     e = html.escape
     if not rows:
         return '        <p class="note">No history has been recorded for this target yet.</p>\n'
+    upgrades = any(r["upgrade"] for r in rows)
     body = "\n".join(
         f'          <tr><td>{e(r["date"])}</td>'
         f'<td>{r["wheels"]:,} / {r["packages"]:,}</td>'
-        f'<td>{e(percent(r["wheels"], r["packages"]))}</td></tr>'
+        f'<td>{e(percent(r["wheels"], r["packages"]))}</td>'
+        + (f'<td>{"wheelgap " + e(r["upgrade"]) if r["upgrade"] else ""}</td>' if upgrades else "")
+        + "</tr>"
         for r in rows
     )
+    if rows[0]["date"] >= start:
+        since = f"since the campaign started on {e(start)}"
+    else:
+        since = f"for the latest night only: none is recorded yet from the campaign's start on {e(start)}"
+    upgrade_note = (
+        " A night marked with a wheelgap version is the first scan with that release: its change from the "
+        "night before can come from the tool (new targets, or different rules for which wheels count), "
+        "not only from packages shipping wheels."
+        if upgrades else ""
+    )
     return (
-        f'        <p class="note">Nightly scan totals for {e(label)} (every package in the '
-        "scan, not only this campaign's top N; history.json does not keep a top-N slice).</p>\n"
+        f'        <p class="note">Nightly scan totals for {e(label)} {since}. They count every package in the '
+        f"scan, not only this campaign's top N (history.json does not keep a top-N slice).{upgrade_note}</p>\n"
         '        <div class="matrix-scroll"><table class="matrix">\n'
-        "          <thead><tr><th>Date</th><th>Wheels</th><th>Share</th></tr></thead>\n"
+        "          <thead><tr><th>Date</th><th>Wheels</th><th>Share</th>"
+        + ("<th>Note</th>" if upgrades else "")
+        + "</tr></thead>\n"
         f"          <tbody>\n{body}\n          </tbody>\n"
         "        </table></div>\n"
     )
@@ -406,7 +430,7 @@ def page(campaign: dict, scan: dict, history: list, changes: list, python: str) 
       <h2>Coverage</h2>
       <p><strong>{e(share)}</strong> of the top {top} packages have {e(article(platform_name))} {e(platform_name)} wheel today ({wheels:,} of {total:,}).{checked_note}</p>
       <p>Pure-Python packages have a wheel for every platform, so that share flatters it. Of the {compiled_total:,} with compiled code, <strong>{e(percent(compiled_wheels, compiled_total))}</strong> have one ({compiled_wheels:,} of {compiled_total:,}).</p>
-{trend_html(trend(history, label), label)}    </section>
+{trend_html(trend(history, label, campaign["start"]), label, campaign["start"])}    </section>
     <section>
       <h2>To do</h2>
       <p class="note">{len(todo)} of the top {top} packages have Python {e(python)} wheels for other platforms but not {e(platform_name)}, most-downloaded first. {e(ASK_FIRST)}{how_to_html}</p>

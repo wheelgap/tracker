@@ -173,12 +173,46 @@ class CampaignTests(unittest.TestCase):
         self.assertIn('href="https://pypi.org/project/psycopg2/"', page)
         self.assertNotIn("Source</th>", page)
 
+    def trend(self, page: str) -> str:
+        return page.split(">Coverage</h2>", 1)[1].split(">To do</h2>", 1)[0]
+
     def test_trend_uses_history_for_the_badge_python_label(self):
-        page = self.built_page()
-        self.assertIn("2026-11-09", page)
-        self.assertIn("80 / 100", page)
-        self.assertIn("85 / 100", page)
-        self.assertIn("nightly scan", page.lower())
+        trend = self.trend(self.built_page())
+        self.assertIn("85 / 100", trend)
+        self.assertIn("Nightly scan totals for 3.15 musl-aarch64 since the campaign started on 2026-11-10", trend)
+
+    def test_trend_starts_at_the_campaign_start(self):
+        trend = self.trend(self.built_page())
+        # 9 Nov is before the 10 Nov start.
+        self.assertNotIn("2026-11-09", trend)
+        self.assertNotIn("80 / 100", trend)
+        self.assertIn("<td>2026-11-11</td>", trend)
+
+    def test_trend_shows_the_latest_night_before_any_since_start(self):
+        self.config.write_text(CONFIG.replace('start = "2026-11-10"', 'start = "2026-12-01"'), encoding="utf-8")
+        trend = self.trend(self.built_page())
+        self.assertNotIn("2026-11-09", trend)
+        self.assertIn("<td>2026-11-11</td>", trend)
+        self.assertIn("latest night only: none is recorded yet from the campaign's start on 2026-12-01", trend)
+
+    def test_trend_marks_a_wheelgap_version_change(self):
+        self.history_data[1]["wheelgap"] = "0.9.0"
+        self.history_data.append(
+            {"date": "2026-11-12", "wheelgap": "0.9.0", "packages": 100,
+             "summary": {"3.15 musl-aarch64": {"wheel": 86, "source": 9, "missing": 5, "unknown": 0}}}
+        )
+        trend = self.trend(self.built_page())
+        self.assertIn("<th>Note</th>", trend)
+        # 11 Nov is the first 0.9.0 night (9 Nov, before start, was 0.8.0); 12 Nov is unchanged.
+        self.assertIn("<tr><td>2026-11-11</td><td>85 / 100</td><td>85%</td><td>wheelgap 0.9.0</td></tr>", trend)
+        self.assertIn("<tr><td>2026-11-12</td><td>86 / 100</td><td>86%</td><td></td></tr>", trend)
+        self.assertIn("can come from the tool", trend)
+
+    def test_trend_has_no_note_column_without_a_version_change(self):
+        trend = self.trend(self.built_page())
+        self.assertNotIn("<th>Note</th>", trend)
+        self.assertNotIn("wheelgap 0.8.0", trend)
+        self.assertNotIn("can come from the tool", trend)
 
     def test_done_is_gains_on_or_after_start_in_the_current_top_n(self):
         page = self.built_page()
