@@ -22,6 +22,9 @@ import sys
 from pathlib import Path
 
 SCAN_SCHEMA = 1
+# Results that install without a build. `bundled` is Pyodide's own build (wheelgap --pyodide-lock); the badge
+# leaves Pyodide out today, but a bundled package still mustn't lose a platform if that changes.
+INSTALLABLE = ("wheel", "bundled")
 SAFE_NAME = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
 CACHE_SECONDS = 12 * 3600  # the scan runs nightly; shields.io's default cache is much shorter
 
@@ -62,7 +65,7 @@ def badge_for(package: dict, indexes: list[int], python: str) -> dict:
         return badge | {"message": "unknown", "color": "lightgrey"}
     results = package["results"]
     total = len(indexes)
-    wheel = sum(1 for i in indexes if results[i] == "wheel")
+    wheel = sum(1 for i in indexes if results[i] in INSTALLABLE)
     noun = "platform" if total == 1 else "platforms"
     return badge | {"message": f"{wheel}/{total} {noun}", "color": color(wheel, total)}
 

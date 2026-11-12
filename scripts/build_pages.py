@@ -35,7 +35,7 @@ KIND_TEXT = {
     "upstream-issue": "Upstream issue",
     "other-source": "Other source",
 }
-GAP = ("source", "missing")
+GAP = ("source", "missing")  # not `bundled`: Pyodide's own build installs
 SCHEME_RE = re.compile(r"^https://", re.IGNORECASE)  # shown without it; the checker allows only https
 
 # Same order and names as PLATFORM_NAMES in site/app.js.
@@ -50,8 +50,16 @@ PLATFORM_NAMES = {
     "win-arm64": "Windows ARM64",
     "pyodide": "Pyodide (browser)",
 }
-STATUS_TEXT = {"wheel": "wheel", "source": "from source", "missing": "can't install", "unknown": "unknown"}
-# No scripts, fetches or frames: only the stylesheet, the favicon and the inline style on the "Why?" line.
+STATUS_TEXT = {
+    "wheel": "wheel",
+    "bundled": "bundled",
+    "source": "from source",
+    "missing": "can't install",
+    "unknown": "unknown",
+}
+# Under the table when a result is `bundled` (wheelgap --pyodide-lock); same text as BUNDLED_NOTE in site/app.js.
+BUNDLED_NOTE = "bundled: Pyodide ships its own build of this package, so it installs there without a wheel on PyPI."
+# No scripts, fetches or frames: only the stylesheet, the favicon and the inline style on the lines under the table.
 CSP = "default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'none'"
 
 
@@ -202,6 +210,8 @@ def page(
     sub += f' · <a href="https://pypi.org/project/{e(name)}/">PyPI</a>'
     explain = f"uvx wheelgap {name}=={version} -p {python} -t all --explain" if version else ""
     why = f'\n      <p class="sub" style="margin:12px 0 0">Why? <code>{e(explain)}</code></p>' if explain else ""
+    if not package.get("error") and "bundled" in package["results"]:
+        why = f'\n      <p class="sub" style="margin:12px 0 0">{e(BUNDLED_NOTE)}</p>{why}'
     shown = check_notes.current(notes or [], package, targets)
     notes_section = notes_html(
         shown, canonical(name), gap_platforms(package, targets), str(scan["generated"])[:10], note_file

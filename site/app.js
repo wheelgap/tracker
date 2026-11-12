@@ -12,7 +12,11 @@ const PLATFORM_NAMES = {
   "pyodide": ["Pyodide (browser)", "wasm32 · PyPI wheels only"],
 };
 const platformName = (p) => (Object.hasOwn(PLATFORM_NAMES, p) ? PLATFORM_NAMES[p] : [p, ""]);
-const STATUS_TEXT = { wheel: "wheel", source: "from source", missing: "can't install", unknown: "unknown" };
+const STATUS_TEXT = { wheel: "wheel", bundled: "bundled", source: "from source", missing: "can't install", unknown: "unknown" };
+// A wheel, or Pyodide's own build of the package (wheelgap --pyodide-lock): either way it installs without a build.
+const INSTALLABLE = new Set(["wheel", "bundled"]);
+// Same text as BUNDLED_NOTE in scripts/build_pages.py.
+const BUNDLED_NOTE = "bundled: Pyodide ships its own build of this package, so it installs there without a wheel on PyPI.";
 const PAGE = 50;
 
 const $ = (id) => document.getElementById(id);
@@ -24,6 +28,16 @@ const state = { data: null, history: [], python: null, platform: "musl-aarch64",
 
 function pythons() {
   return [...new Set(state.data.targets.map((t) => t.python))];
+}
+
+// The scan counted Pyodide's own builds as `bundled` for this Python (it had a --pyodide-lock for it).
+function hasPyodideLock(python) {
+  return (state.data.pyodide_locks ?? []).some((lock) => lock && lock.python === python);
+}
+
+function platformDetail(t) {
+  if (t.platform === "pyodide" && hasPyodideLock(t.python)) return "wasm32 · PyPI wheels and Pyodide's builds";
+  return platformName(t.platform)[1];
 }
 
 function targetIndex(python, platform) {
@@ -41,6 +55,13 @@ function renderMeta() {
   $("pure-note").textContent =
     `${fmt(pure)} of the ${fmt(d.packages.length)} are pure Python and install everywhere; ` +
     `the gaps are among the ${fmt(d.packages.length - pure)} with compiled code.`;
+  const locks = (d.pyodide_locks ?? []).filter((lock) => lock && typeof lock.python === "string");
+  if (locks.length) {
+    $("legend-bundled").hidden = false;
+    $("pyodide-note").textContent =
+      `Pyodide also ships its own builds of many popular packages: on Python ${locks.map((l) => l.python).join(" and ")}, ` +
+      "those count as bundled, since they install there without a wheel on PyPI.";
+  }
   $("package-names").innerHTML = d.packages.map((p) => `<option value="${esc(p.name)}">`).join("");
 }
 
@@ -62,17 +83,23 @@ function renderPlatforms() {
     .filter((t) => t.python === state.python)
     .map((t) => {
       const s = d.summary[t.label];
-      const [name, detail] = platformName(t.platform);
+      const [name] = platformName(t.platform);
+      const bundled = s.bundled ?? 0;
+      const ok = s.wheel + bundled; // installs without a build
       const prev = previousSummary(t.label);
-      const delta = prev ? s.wheel - prev.wheel : 0;
+      // A previous scan that counted nothing as bundled here (no --pyodide-lock yet) isn't like for like.
+      const comparable = prev && !(bundled && !prev.bundled);
+      const delta = comparable ? ok - (prev.wheel + (prev.bundled ?? 0)) : 0;
       const trend = delta ? ` <small>${delta > 0 ? "+" : ""}${delta} since last scan</small>` : "";
-      const seg = (k) => `<span class="b-${k}" style="width:${pct(s[k], n)}%"></span>`;
+      const seg = (k) => `<span class="b-${k}" style="width:${pct(s[k] ?? 0, n)}%"></span>`;
+      const counts = [`${fmt(s.wheel)} wheel`, ...(bundled ? [`${fmt(bundled)} bundled with Pyodide`] : []),
+        `${fmt(s.source)} from source`, `${fmt(s.missing)} can't install`].join(" · ");
       return `<li><button data-platform="${esc(t.platform)}" aria-pressed="${t.platform === state.platform}"
-          aria-label="${esc(name)}: ${pct(s.wheel, n)}% have a wheel">
-        <span class="pname">${esc(name)}<small>${esc(detail)}</small></span>
-        <span class="bar" title="${esc(fmt(s.wheel))} wheel · ${esc(fmt(s.source))} from source · ${esc(fmt(s.missing))} can't install">
-          ${seg("wheel")}${seg("source")}${seg("missing")}${seg("unknown")}</span>
-        <span class="pct">${pct(s.wheel, n)}%<small>${fmt(n - s.wheel)} without${trend}</small></span>
+          aria-label="${esc(name)}: ${pct(ok, n)}% have a wheel${bundled ? " or a Pyodide build" : ""}">
+        <span class="pname">${esc(name)}<small>${esc(platformDetail(t))}</small></span>
+        <span class="bar" title="${esc(counts)}">
+          ${seg("wheel")}${seg("bundled")}${seg("source")}${seg("missing")}${seg("unknown")}</span>
+        <span class="pct">${pct(ok, n)}%<small>${fmt(n - ok)} without${trend}</small></span>
       </button></li>`;
     });
   $("platforms").innerHTML = rows.join("");
@@ -131,7 +158,9 @@ function renderTrends() {
   $("trend-section").hidden = !rows;
   dates.sort();
   $("trend-note").textContent = rows
-    ? `Share of packages with a wheel for Python ${state.python}, one point per nightly scan from ${dates[0]} to ${dates[dates.length - 1]}. Each chart is scaled to its own range.`
+    ? `Share of packages with a wheel for Python ${state.python}, one point per nightly scan from ${dates[0]} to ${dates[dates.length - 1]}. Each chart is scaled to its own range.` +
+      // Wheels only, so the line doesn't jump on the night the scan started counting Pyodide's builds.
+      (hasPyodideLock(state.python) ? " On Pyodide that's PyPI wheels only: the bars above also count Pyodide's own builds." : "")
     : "";
 }
 
@@ -144,7 +173,7 @@ function renderGaps() {
     $("more").hidden = true;
     return;
   }
-  const gaps = state.data.packages.filter((p) => p.results[i] !== "wheel");
+  const gaps = state.data.packages.filter((p) => !INSTALLABLE.has(p.results[i]));
   $("gaps").innerHTML =
     gaps
       .slice(0, state.shown)
@@ -201,6 +230,7 @@ function renderLookup(query) {
         .map((pl) => `<tr><th scope="row">${esc(PLATFORM_NAMES[pl][0])}</th>${pys.map((py) => cell(py, pl)).join("")}</tr>`)
         .join("")}</tbody>
     </table></div>
+    ${!p.error && p.results.includes("bundled") ? `<p class="sub" style="margin:12px 0 0">${esc(BUNDLED_NOTE)}</p>` : ""}
     ${
       targetIndex(state.python, state.platform) < 0
         ? ""

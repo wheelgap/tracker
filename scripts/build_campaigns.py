@@ -63,7 +63,16 @@ PLATFORM_NAMES = {
     "win-arm64": "Windows ARM64",
     "pyodide": "Pyodide (browser)",
 }
-STATUS_TEXT = {"wheel": "wheel", "source": "from source", "missing": "can't install", "unknown": "unknown"}
+STATUS_TEXT = {
+    "wheel": "wheel",
+    "bundled": "bundled",
+    "source": "from source",
+    "missing": "can't install",
+    "unknown": "unknown",
+}
+# Results that install without a build: a wheel, or (on Pyodide) Pyodide's own build. A campaign counts both as
+# having the wheel; `bundled` only appears on pyodide targets, so today it only matters for a Pyodide campaign.
+INSTALLABLE = ("wheel", "bundled")
 CSP = "default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'none'"
 ASK_FIRST = (
     "Pick one package, not a list. Search its issue tracker first: someone may have asked already. "
@@ -159,7 +168,8 @@ def package_status(package: dict, index: int) -> str:
 
 
 def has_wheel(package: dict, index: int) -> bool:
-    return package_status(package, index) == "wheel"
+    """A wheel on the target, or Pyodide's own build of the package (`bundled`)."""
+    return package_status(package, index) in INSTALLABLE
 
 
 def coverage_counts(packages: list[dict], index: int) -> tuple[int, int]:
@@ -189,7 +199,7 @@ def native_indexes(targets: list[dict], python: str, platform: str) -> list[int]
 
 def not_started(package: dict, indexes: list[int]) -> bool:
     """No wheel for this Python on any platform of the campaign's OS: not a gap for this campaign to ask about."""
-    return not package.get("error") and not any(package["results"][i] == "wheel" for i in indexes)
+    return not package.get("error") and not any(package["results"][i] in INSTALLABLE for i in indexes)
 
 
 def trend(history: list[dict], label: str, start: str) -> list[dict]:
@@ -302,7 +312,7 @@ def baseline_for(campaign: dict, scan: dict, changes: list[dict], python: str) -
         then = {
             i: status_at_start(changes, key, targets[i]["label"], start, package["results"][i]) for i in indexes
         }
-        if then[index] == "wheel" or not any(then[i] == "wheel" for i in indexes if i != index):
+        if then[index] in INSTALLABLE or not any(then[i] in INSTALLABLE for i in indexes if i != index):
             continue
         rows[key] = {"name": package["name"], "rank": package["rank"], "status": then[index]}
     return {

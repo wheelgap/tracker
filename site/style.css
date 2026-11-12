@@ -6,6 +6,7 @@
   --line: #e7e2da;
   --accent: #b45309;
   --wheel: #15803d;
+  --bundled: #0e7490;
   --source: #d97706;
   --missing: #dc2626;
   --unknown: #a8a29e;
@@ -24,6 +25,7 @@
     --line: #2e2a24;
     --accent: #f59e0b;
     --wheel: #22c55e;
+    --bundled: #22d3ee;
     --source: #f59e0b;
     --missing: #f87171;
     --unknown: #78716c;
@@ -80,6 +82,7 @@ h2 { font-size: 1.25rem; margin: 0 0 8px; letter-spacing: -0.01em; }
 .bar { display: flex; height: 12px; border-radius: 999px; overflow: hidden; background: var(--bar-bg); }
 .bar span { display: block; height: 100%; }
 .b-wheel { background: var(--wheel); }
+.b-bundled { background: var(--bundled); }
 .b-source { background: var(--source); }
 .b-missing { background: var(--missing); }
 .b-unknown { background: var(--unknown); }
@@ -88,7 +91,7 @@ h2 { font-size: 1.25rem; margin: 0 0 8px; letter-spacing: -0.01em; }
 
 .legend { display: flex; flex-wrap: wrap; gap: 6px 18px; color: var(--muted); font-size: 0.85rem; margin: 10px 2px 0; }
 .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
-.sw-wheel { background: var(--wheel); } .sw-source { background: var(--source); } .sw-missing { background: var(--missing); }
+.sw-wheel { background: var(--wheel); } .sw-bundled { background: var(--bundled); } .sw-source { background: var(--source); } .sw-missing { background: var(--missing); }
 
 .trends { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr)); gap: 10px; }
 .trends li {
@@ -125,6 +128,7 @@ h2 { font-size: 1.25rem; margin: 0 0 8px; letter-spacing: -0.01em; }
 
 .status { display: inline-block; font: 600 0.78rem var(--mono); padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
 .s-wheel { color: var(--wheel); background: color-mix(in srgb, var(--wheel) 14%, transparent); }
+.s-bundled { color: var(--bundled); background: color-mix(in srgb, var(--bundled) 14%, transparent); }
 .s-source { color: var(--source); background: color-mix(in srgb, var(--source) 16%, transparent); }
 .s-missing { color: var(--missing); background: color-mix(in srgb, var(--missing) 14%, transparent); }
 .s-unknown, .s-none { color: var(--muted); background: var(--bar-bg); }
