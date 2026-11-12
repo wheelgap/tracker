@@ -76,3 +76,29 @@ test("the Why command passes the pinned lock on pyodide only", () => {
   assert.equal(logic.whyCommand("pandas", "3.1.1", "3.14", "pyodide", releases),
     "uvx wheelgap pandas==3.1.1 -p 3.14 -t pyodide --explain");
 });
+
+test("only a jsDelivr Pyodide lock URL is accepted, since it goes into a shell command", () => {
+  const ok = (lock) => Object.keys(logic.pyodideReleases({ pythons: { "3.14": { pyodide: "314.0.7", lock } } })).length === 1;
+  assert.ok(ok(LOCK));
+  assert.ok(ok("https://cdn.jsdelivr.net/pyodide/v315.0.0a2/full/pyodide-lock.json"));
+  for (const bad of [
+    "https://evil.example/pyodide/v0.29.5/full/pyodide-lock.json",
+    `${LOCK}; rm -rf ~`,
+    `${LOCK} $(id)`,
+    "https://cdn.jsdelivr.net/pyodide/v0.29.5/full/pyodide-lock.json\n",
+    "https://cdn.jsdelivr.net/pyodide/vX/full/pyodide-lock.json",
+    "https://cdn.jsdelivr.net/pyodide/v0.29.5/../x/full/pyodide-lock.json",
+    "https://cdn.jsdelivr.net/npm/pyodide@0.29.5/pyodide-lock.json",
+  ]) {
+    assert.ok(!ok(bad), bad);
+  }
+});
+
+test("text fields are capped at 199 characters", () => {
+  const info = (v) => ({ pyodide: "0.29.5", bundled_version: v, vs_latest: "same" });
+  assert.equal(logic.bundledDetail(info("1".repeat(199))), `Pyodide 0.29.5 ships ${"1".repeat(199)}`);
+  assert.equal(logic.bundledDetail(info("1".repeat(200))), "");
+  assert.equal(logic.bundledDetail(info("")), "");
+  assert.deepEqual(logic.bundledInfo({ bundled: { x: info("1".repeat(200)) } }), {});
+  assert.deepEqual(logic.pyodideReleases({ pythons: { "3.13": { pyodide: "0".repeat(200), lock: LOCK } } }), {});
+});

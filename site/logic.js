@@ -9,6 +9,9 @@ const BUNDLED_NOTE =
   "bundled: there's no wheel on PyPI for Pyodide, but Pyodide ships its own build of this package, often an " +
   "older version than the one shown here. The cell names the Pyodide release and the version it ships.";
 
+// A pinned release's lock on jsDelivr, the only shape build_lookup.py writes. It ends up in a copy-paste shell
+// command, so nothing else is accepted.
+const LOCK_URL = /^https:\/\/cdn\.jsdelivr\.net\/pyodide\/v[0-9][0-9.a-z]*\/full\/pyodide-lock\.json$/;
 const isText = (v) => typeof v === "string" && v.length > 0 && v.length < 200;
 const isCount = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0;
 
@@ -40,7 +43,7 @@ function pyodideReleases(raw) {
   const pythons = raw && typeof raw === "object" && raw.pythons;
   if (!pythons || typeof pythons !== "object" || Array.isArray(pythons)) return out;
   for (const [python, r] of Object.entries(pythons)) {
-    if (/^3\.\d+$/.test(python) && r && typeof r === "object" && isText(r.pyodide) && isText(r.lock) && r.lock.startsWith("https://")) {
+    if (/^3\.\d+$/.test(python) && r && typeof r === "object" && isText(r.pyodide) && typeof r.lock === "string" && LOCK_URL.test(r.lock)) {
       out[python] = { pyodide: r.pyodide, lock: r.lock };
     }
   }

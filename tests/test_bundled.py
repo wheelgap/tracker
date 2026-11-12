@@ -77,12 +77,20 @@ class Repo(unittest.TestCase):
         self.write_lock(LOCK)
 
     def write_lock(self, lock, python="3.14", sha=None):
-        raw = json.dumps(lock).encode()
+        self.write_locks((python, "314.0.7", lock), sha=sha)
+
+    def write_locks(self, *locks, sha=None):
+        """Each lock is (python, release, lock data); the files and manifest look like the committed ones."""
         (self.root / "pyodide").mkdir(exist_ok=True)
-        (self.root / LOCK_FILE).write_bytes(raw)
-        entry = {"python": python, "pyodide": "314.0.7", "file": LOCK_FILE, "url": LOCK_URL,
-                 "sha256": sha or hashlib.sha256(raw).hexdigest()}
-        (self.root / "pyodide" / "locks.json").write_text(json.dumps({"schema": 1, "locks": [entry]}))
+        entries = []
+        for python, release, lock in locks:
+            raw = json.dumps(lock).encode()
+            file = f"pyodide/{release}-pyodide-lock.json"
+            (self.root / file).write_bytes(raw)
+            url = f"https://cdn.jsdelivr.net/pyodide/v{release}/full/pyodide-lock.json"
+            entries.append({"python": python, "pyodide": release, "file": file, "url": url,
+                            "sha256": sha or hashlib.sha256(raw).hexdigest()})
+        (self.root / "pyodide" / "locks.json").write_text(json.dumps({"schema": 1, "locks": entries}))
 
     def problems(self, data, history=()):
         with mock.patch.dict(os.environ):
@@ -90,7 +98,50 @@ class Repo(unittest.TestCase):
             return check_scan.problems(data, list(history), top=len(data["packages"]), root=self.root)
 
 
+TWO_TARGETS = [
+    {"label": "3.13 pyodide", "python": "3.13", "platform": "pyodide"},
+    {"label": "3.14 pyodide", "python": "3.14", "platform": "pyodide"},
+]
+
+
+def two_lock_setup(repo):
+    """Locks for 3.13 (numpy 2.2.5) and 3.14 (numpy 2.4.6), and a scan where numpy is bundled on both."""
+    lock313 = {"info": {"python": "3.13.2"}, "packages": {"numpy": {"name": "numpy", "version": "2.2.5"}}}
+    lock314 = {"info": {"python": "3.14.2"}, "packages": {"numpy": {"name": "numpy", "version": "2.4.6"}}}
+    repo.write_locks(("3.13", "0.29.5", lock313), ("3.14", "314.0.7", lock314))
+    data = scan([package("numpy", ["bundled", "bundled"], version="2.5.0")])
+    data["targets"] = TWO_TARGETS
+    data["summary"] = {t["label"]: {"bundled": 1} for t in TWO_TARGETS}
+    data["pyodide_locks"] = [
+        {"python": "3.13", "pyodide_version": "?", "source": "pyodide/0.29.5-pyodide-lock.json"},
+        {"python": "3.14", "pyodide_version": "?", "source": "pyodide/314.0.7-pyodide-lock.json"},
+    ]
+    return data
+
+
 class CheckScanTests(Repo):
+    def test_two_locks_each_for_its_python(self):
+        data = two_lock_setup(self)
+        self.assertEqual(self.problems(data), [])
+        # A package only one release ships is a stray on the other Python.
+        self.write_locks(
+            ("3.13", "0.29.5", {"info": {"python": "3.13.2"}, "packages": {}}),
+            ("3.14", "314.0.7", {"info": {"python": "3.14.2"}, "packages": {"numpy": {"name": "numpy", "version": "2"}}}),
+        )
+        self.assertEqual(self.problems(data), ["3.13 pyodide: bundled but not in Pyodide 0.29.5's lock: numpy"])
+
+    def test_stray_check_matches_names_as_wheelgap_does(self):
+        lock = {"info": {"python": "3.14.2"}, "packages": {
+            "ruamel.yaml": {"name": "ruamel.yaml", "version": "0.18"},
+            "a__b": {"name": "a__b", "version": "1"},
+        }}
+        self.write_lock(lock)
+        data = scan([
+            package("ruamel_yaml", ["wheel", "source", "bundled"]),
+            package("A.B", ["wheel", "source", "bundled"], rank=2),
+        ])
+        self.assertEqual(self.problems(data), [])
+
     def test_bundled_with_its_lock_is_accepted(self):
         self.assertEqual(self.problems(scan([package("numpy", ["wheel", "source", "bundled"])])), [])
 
@@ -173,9 +224,34 @@ class LockTests(unittest.TestCase):
         self.assertEqual(pyodide_locks.compare("2.4", "2.4.0"), "same")
         self.assertEqual(pyodide_locks.compare("2.3.3", "3.1.1"), "older")
         self.assertEqual(pyodide_locks.compare("3.2", "3.1.1"), "different")  # newer than PyPI's latest: not "older"
-        self.assertEqual(pyodide_locks.compare("2.0rc1", "2.0"), "different")
+        self.assertEqual(pyodide_locks.compare("2.0rc1", "2.0"), "older")
         self.assertEqual(pyodide_locks.compare("2.0rc1", "2.0rc1"), "same")
         self.assertEqual(pyodide_locks.compare("2.0", None), "different")
+
+    def test_compare_normalises_as_pep_440_does(self):
+        for bundled, scanned in (("2.0rc1", "2.0.0rc1"), ("2.0.post1", "2.0-1"), ("2.0RC1", "2.0-rc.1"),
+                                 ("v1.0", "1.0"), ("1.0alpha2", "1.0a2"), ("0!1.0", "1.0")):
+            self.assertEqual(pyodide_locks.compare(bundled, scanned), "same", (bundled, scanned))
+        for bundled, scanned in (("2.0", "2.0.post1"), ("2.0.dev1", "2.0a1"), ("2.0a1", "2.0b1"), ("1.9", "1.10")):
+            self.assertEqual(pyodide_locks.compare(bundled, scanned), "older", (bundled, scanned))
+        for bundled, scanned in (("1.0+local", "1.0"), ("1!1.0", "2.0"), ("2.0", "2.0.dev1"), ("not a version", "1.0")):
+            self.assertEqual(pyodide_locks.compare(bundled, scanned), "different", (bundled, scanned))
+        self.assertEqual(pyodide_locks.compare("not a version", "not a version"), "same")
+
+    def test_canonical_names(self):
+        self.assertEqual(pyodide_locks.canonical("ruamel.yaml"), "ruamel-yaml")
+        self.assertEqual(pyodide_locks.canonical("a__b"), "a-b")
+        self.assertEqual(pyodide_locks.canonical("Zope._-Interface"), "zope-interface")
+
+    def test_lock_packages_filter_details(self):
+        lock = {"info": {"python": "3.14.2"}, "packages": {
+            "ruamel.yaml": {"name": "ruamel.yaml", "version": "0.18"},  # no package_type, no file_name: kept
+            "a__b": {"name": "a__b", "version": "1", "package_type": "package", "file_name": "A__B-1-PY3-NONE-ANY.WHL"},
+            "zlib": {"name": "zlib", "version": "1.3", "package_type": "cpython_module"},
+            "nover": {"name": "nover"},
+            "notadict": "x",
+        }}
+        self.assertEqual(pyodide_locks.lock_packages(lock), {"ruamel-yaml": "0.18", "a-b": "1"})
 
     def test_describe(self):
         self.assertEqual(
@@ -183,6 +259,45 @@ class LockTests(unittest.TestCase):
             "Pyodide 0.29.5 ships 2.3.3, older than the latest",
         )
         self.assertEqual(pyodide_locks.describe({"pyodide": None, "bundled_version": None, "vs_latest": None}), "")
+        self.assertEqual(
+            pyodide_locks.describe({"pyodide": "314.0.7", "bundled_version": "2.1rc1", "vs_latest": "different"}),
+            "Pyodide 314.0.7 ships 2.1rc1, not the latest",
+        )
+        self.assertEqual(
+            pyodide_locks.describe({"pyodide": "314.0.7", "bundled_version": "6.0.3", "vs_latest": "same"}),
+            "Pyodide 314.0.7 ships 6.0.3",
+        )
+
+
+class ReleasesTests(Repo):
+    def releases(self, data):
+        warnings = []
+        return pyodide_locks.releases(data, self.root, warn=warnings.append), warnings
+
+    def test_malformed_locks_give_nothing_and_say_so(self):
+        data = scan([])
+        data["pyodide_locks"] = [{"python": "3.14"}]
+        found, warnings = self.releases(data)
+        self.assertEqual(found, {})
+        self.assertEqual(warnings, ["pyodide_locks: malformed in coverage.json, so no Pyodide versions are shown"])
+
+    def test_a_missing_lock_file_is_left_out(self):
+        (self.root / LOCK_FILE).unlink()
+        found, warnings = self.releases(scan([]))
+        self.assertEqual(found, {})
+        self.assertEqual(warnings, [f"pyodide_locks: {LOCK_FILE} is missing"])
+
+    def test_a_manifest_entry_for_another_python_is_left_out(self):
+        data = scan([])
+        data["pyodide_locks"][0]["python"] = "3.13"
+        found, warnings = self.releases(data)
+        self.assertEqual(found, {})
+        self.assertEqual(warnings, [f"pyodide_locks: {LOCK_FILE} (Python 3.13) isn't in pyodide/locks.json"])
+
+    def test_each_python_gets_its_own_lock(self):
+        found, warnings = self.releases(two_lock_setup(self))
+        self.assertEqual(warnings, [])
+        self.assertEqual({py: r["packages"]["numpy"] for py, r in found.items()}, {"3.13": "2.2.5", "3.14": "2.4.6"})
 
 
 class CommittedLockTests(unittest.TestCase):
@@ -320,6 +435,19 @@ class LookupTests(Repo):
         self.assertEqual((files["plain"]["pyodide"], files["plain"]["bundled"]), (pyodide, {}))
         self.assertEqual(releases["pythons"], {"3.14": {"pyodide": "314.0.7", "lock": LOCK_URL}})
 
+    def test_two_locks_give_each_python_its_own_version(self):
+        coverage = self.root / "coverage.json"
+        coverage.write_text(json.dumps(two_lock_setup(self)), encoding="utf-8")
+        out = self.root / "site" / "data" / "packages"
+        build_lookup.build(coverage, out, root=self.root)
+        numpy = json.loads((out / "numpy.json").read_text(encoding="utf-8"))
+        self.assertEqual(numpy["bundled"], {
+            "3.13 pyodide": {"pyodide": "0.29.5", "bundled_version": "2.2.5", "vs_latest": "older"},
+            "3.14 pyodide": {"pyodide": "314.0.7", "bundled_version": "2.4.6", "vs_latest": "older"},
+        })
+        self.assertEqual({k: v["pyodide"] for k, v in numpy["pyodide"].items()},
+                         {"3.13 pyodide": "0.29.5", "3.14 pyodide": "314.0.7"})
+
     def test_a_lock_that_doesnt_match_gives_no_version_rather_than_a_guess(self):
         self.write_lock(LOCK, sha="0" * 64)
         with mock.patch("sys.stderr"):
@@ -354,7 +482,17 @@ class PageTests(Repo):
 
     def test_why_command_passes_the_pinned_lock(self):
         pages = self.build([package("numpy", ["wheel", "wheel", "bundled"])])
-        self.assertIn(f"uvx wheelgap numpy==1.0 -p 3.14 -t all --explain --pyodide-lock {LOCK_URL}", pages["numpy"])
+        # wheelgap 0.9.0 accepts this form; with `-t all` alone it refuses the lock (no pyodide target).
+        self.assertIn(
+            f"uvx wheelgap numpy==1.0 -p 3.14 -t all,pyodide --explain --pyodide-lock {LOCK_URL}", pages["numpy"]
+        )
+
+    def test_the_bundled_line_is_escaped(self):
+        lock = {"info": {"python": "3.14.2"}, "packages": {"numpy": {"name": "numpy", "version": "1<b>&"}}}
+        self.write_lock(lock)
+        pages = self.build([package("numpy", ["wheel", "wheel", "bundled"])])
+        self.assertIn("Pyodide 314.0.7 ships 1&lt;b&gt;&amp;, not the latest", pages["numpy"])
+        self.assertNotIn("1<b>", pages["numpy"])
 
     def test_a_failed_lookup_gets_no_bundled_line(self):
         pages = self.build([package("numpy", ["unknown", "unknown", "bundled"], version=None, error="timeout")])

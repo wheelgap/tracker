@@ -21,7 +21,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = Path("pyodide") / "locks.json"
 MANIFEST_SCHEMA = 1
-RELEASE_RE = re.compile(r"\d+(?:\.\d+)*", re.ASCII)
+# PEP 440's version pattern, as in packaging.version (the build scripts are stdlib only, so no packaging).
+VERSION_RE = re.compile(
+    r"""
+    v?
+    (?:(?P<epoch>[0-9]+)!)?
+    (?P<release>[0-9]+(?:\.[0-9]+)*)
+    (?P<pre>[-_.]?(?P<pre_l>alpha|a|beta|b|preview|pre|c|rc)[-_.]?(?P<pre_n>[0-9]+)?)?
+    (?P<post>(?:-(?P<post_n1>[0-9]+))|(?:[-_.]?(?P<post_l>post|rev|r)[-_.]?(?P<post_n2>[0-9]+)?))?
+    (?P<dev>[-_.]?(?P<dev_l>dev)[-_.]?(?P<dev_n>[0-9]+)?)?
+    (?:\+(?P<local>[a-z0-9]+(?:[-_.][a-z0-9]+)*))?
+    """,
+    re.VERBOSE | re.IGNORECASE | re.ASCII,
+)
+PRE_LETTERS = {"alpha": "a", "a": "a", "beta": "b", "b": "b", "c": "rc", "pre": "rc", "preview": "rc", "rc": "rc"}
 
 
 def canonical(name: str) -> str:
@@ -122,23 +135,43 @@ def releases(scan: dict, root: Path = ROOT, warn=None) -> dict[str, dict]:
     return out
 
 
-def _release(text: str) -> tuple[int, ...]:
-    return tuple(int(part) for part in text.split("."))
+def version_key(text: str) -> tuple | None:
+    """A sort key that orders and equates versions as PEP 440 (packaging.version) does, or None if it isn't one.
+
+    So 2.0rc1 == 2.0.0rc1, 2.0.post1 == 2.0-1 and 2.4 == 2.4.0, and 2.0rc1 < 2.0 < 2.0.post1.
+    """
+    m = VERSION_RE.fullmatch(text.strip())
+    if not m:
+        return None
+    release = [int(part) for part in m["release"].split(".")]
+    while release and release[-1] == 0:
+        release.pop()
+    pre = (1, PRE_LETTERS[m["pre_l"].lower()], int(m["pre_n"] or 0)) if m["pre"] else None
+    post = int(m["post_n1"] or m["post_n2"] or 0) if m["post"] else None
+    dev = int(m["dev_n"] or 0) if m["dev"] else None
+    # packaging's _cmpkey: a dev release with no pre or post sorts before the pre-releases.
+    pre_key = (0,) if pre is None and post is None and dev is not None else (2,) if pre is None else pre
+    post_key = (0,) if post is None else (1, post)
+    dev_key = (2,) if dev is None else (1, dev)
+    local = m["local"]
+    local_key = (0,) if local is None else (1, tuple(
+        (1, int(part), "") if part.isdigit() else (0, 0, part.lower()) for part in re.split(r"[-_.]", local)
+    ))
+    return int(m["epoch"] or 0), tuple(release), pre_key, post_key, dev_key, local_key
 
 
 def compare(bundled: str, scanned: object) -> str:
-    """"same", "older" or "different": Pyodide's version against the scanned (latest) release.
+    """"same", "older" or "different": Pyodide's version against the scanned (latest) release, by PEP 440.
 
-    "older" only when both are plain N(.N)* releases; anything else that isn't equal is "different".
+    "different" covers a version newer than the scanned one, and one that isn't a valid version and isn't
+    spelled the same.
     """
     if not isinstance(scanned, str):
         return "different"
-    if RELEASE_RE.fullmatch(bundled) and RELEASE_RE.fullmatch(scanned):
-        a, b = _release(bundled), _release(scanned)
-        width = max(len(a), len(b))
-        a, b = a + (0,) * (width - len(a)), b + (0,) * (width - len(b))
-        return "same" if a == b else "older" if a < b else "different"
-    return "same" if bundled == scanned else "different"
+    a, b = version_key(bundled), version_key(scanned)
+    if a is None or b is None:
+        return "same" if bundled == scanned else "different"
+    return "same" if a == b else "older" if a < b else "different"
 
 
 def pyodide_targets(targets: list[dict], found: dict[str, dict]) -> dict[str, dict]:

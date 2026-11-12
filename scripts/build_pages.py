@@ -224,8 +224,11 @@ def page(
         sub += f" · lookup failed: {e(package['error'])}"
     sub += f' · <a href="https://pypi.org/project/{e(name)}/">PyPI</a>'
     explain = f"uvx wheelgap {name}=={version} -p {python} -t all --explain" if version else ""
-    if explain and python in found:  # so its pyodide result counts Pyodide's own builds, as the table does
-        explain += f" --pyodide-lock {found[python]['url']}"
+    if explain and python in found:
+        # `-t all` is the native platforms only, and wheelgap refuses a lock no pyodide target uses: add pyodide,
+        # with the lock, so its answer counts Pyodide's own builds as the table does.
+        lock = found[python]["url"]
+        explain = f"uvx wheelgap {name}=={version} -p {python} -t all,pyodide --explain --pyodide-lock {lock}"
     why = f'\n      <p class="sub" style="margin:12px 0 0">Why? <code>{e(explain)}</code></p>' if explain else ""
     if not package.get("error") and "bundled" in package["results"]:
         why = f'\n      <p class="sub" style="margin:12px 0 0">{e(BUNDLED_NOTE)}</p>{why}'
