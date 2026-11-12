@@ -193,7 +193,88 @@ class CampaignTests(unittest.TestCase):
         trend = self.trend(self.built_page())
         self.assertNotIn("2026-11-09", trend)
         self.assertIn("<td>2026-11-11</td>", trend)
-        self.assertIn("latest night only: none is recorded yet from the campaign's start on 2026-12-01", trend)
+        self.assertIn(
+            "on the latest night that has them (2026-11-11), as no night from the campaign's start on 2026-12-01 "
+            "has them yet", trend
+        )
+
+    def test_trend_start_night_is_included(self):
+        self.config.write_text(CONFIG.replace('start = "2026-11-10"', 'start = "2026-11-11"'), encoding="utf-8")
+        self.history_data.append({"date": "2026-11-12", "wheelgap": "0.8.0", "packages": 100,
+                                  "summary": {"3.15 musl-aarch64": {"wheel": 86}}})
+        trend = self.trend(self.built_page())
+        # The start night itself is a row, not only the nights after it.
+        self.assertIn("<td>2026-11-11</td>", trend)
+        self.assertIn("<td>2026-11-12</td>", trend)
+        self.assertNotIn("2026-11-09", trend)
+        self.assertIn("since the campaign started on 2026-11-11", trend)
+
+    def test_trend_falls_back_when_nights_since_start_lack_the_label(self):
+        # 12 Nov is after the start but has no totals for this target.
+        self.config.write_text(CONFIG.replace('start = "2026-11-10"', 'start = "2026-11-12"'), encoding="utf-8")
+        self.history_data.append({"date": "2026-11-12", "wheelgap": "0.8.0", "packages": 100, "summary": {}})
+        trend = self.trend(self.built_page())
+        self.assertIn("on the latest night that has them (2026-11-11)", trend)
+
+    def marks(self, history):
+        return [(r["date"], r["upgrade"]) for r in build_campaigns.trend(history, "L", "2000-01-01")]
+
+    def test_trend_marker_logic(self):
+        def night(date, version, label=True):
+            return {"date": date, "wheelgap": version, "packages": 10, "summary": {"L": {"wheel": 1}} if label else {}}
+        # No marker on the first row, even with a version.
+        self.assertEqual(self.marks([night("d1", "0.7.0")]), [("d1", "")])
+        # A blank version isn't marked and doesn't reset what the next row is compared with.
+        self.assertEqual(
+            self.marks([night("d1", "0.7.0"), night("d2", ""), night("d3", "0.7.0")]),
+            [("d1", ""), ("d2", ""), ("d3", "")],
+        )
+        self.assertEqual(
+            self.marks([night("d1", "0.7.0"), night("d2", ""), night("d3", "0.9.0")]),
+            [("d1", ""), ("d2", ""), ("d3", "0.9.0")],
+        )
+        # The upgrade night lacks the label: the next row for the label is still marked.
+        self.assertEqual(
+            self.marks([night("d1", "0.7.0"), night("d2", "0.9.0", label=False), night("d3", "0.9.0")]),
+            [("d1", ""), ("d3", "0.9.0")],
+        )
+        # A night without the label doesn't count as the previous row.
+        self.assertEqual(
+            self.marks([night("d1", "0.7.0"), night("d2", "0.9.0", label=False), night("d3", "0.7.0")]),
+            [("d1", ""), ("d3", "")],
+        )
+
+    def test_trend_date_and_upgrade_are_escaped(self):
+        self.history_data[0]["wheelgap"] = "0.7.0"
+        self.history_data[1]["date"] = "2026-11-11<b>"
+        self.history_data[1]["wheelgap"] = "0.9<i>"
+        trend = self.trend(self.built_page())
+        self.assertIn("<td>2026-11-11&lt;b&gt;</td>", trend)
+        self.assertIn("<td>wheelgap 0.9&lt;i&gt;</td>", trend)
+        self.assertNotIn("<b>", trend)
+        self.assertNotIn("<i>", trend)
+
+    def test_unsafe_campaign_id_is_rejected(self):
+        for ident in ("../x", "x/y", "X", "a--b", ""):
+            with self.subTest(ident=ident):
+                self.config.write_text(CONFIG.replace('id = "musl-aarch64"', f'id = "{ident}"'), encoding="utf-8")
+                self.write_inputs()
+                with self.assertRaisesRegex(SystemExit, "invalid campaign id"):
+                    build_campaigns.build(self.coverage, self.history, self.changes, self.config, self.site)
+        self.assertFalse((self.root / "x").exists())
+
+    def test_title_version_and_left_out_names_are_escaped(self):
+        self.config.write_text(CONFIG.replace(
+            'title = "musllinux aarch64 wheels for the top 500"', 'title = "Alpine <ARM> & co"'
+        ), encoding="utf-8")
+        self.scan["packages"][1]["version"] = "2.9<x>"
+        self.scan["packages"][3]["name"] = "new<py>"
+        page = self.built_page()
+        self.assertIn("<h1>Alpine &lt;ARM&gt; &amp; co</h1>", page)
+        self.assertIn('<span class="ver">2.9&lt;x&gt;</span>', self.todo(page))
+        self.assertIn("(new&lt;py&gt;)", page.split("Left out:", 1)[1])
+        for raw in ("<ARM>", "<x>", "new<py>"):
+            self.assertNotIn(raw, page)
 
     def test_trend_marks_a_wheelgap_version_change(self):
         self.history_data[1]["wheelgap"] = "0.9.0"

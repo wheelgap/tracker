@@ -166,19 +166,20 @@ def trend(history: list[dict], label: str, start: str) -> list[dict]:
 
     history.json only stores those full-scan totals, not a top-N slice, so the
     trend is labelled as the nightly scan rather than the campaign's top N.
-    If no night is on or after start yet, the latest one is returned on its own.
-    A row's "upgrade" is the night's wheelgap version when it differs from the
-    night before's (even if that night is before start), else "".
+    If no night with this label is on or after start yet, the latest one is returned on its own.
+    A row's "upgrade" is its wheelgap version when that differs from the version of the previous
+    row for this label (even if that row is before start), else "". A night without the label, or
+    without a version, doesn't change what the next row is compared with.
     """
     rows = []
-    previous = None
+    previous = ""
     for entry in history:
-        version = str(entry.get("wheelgap") or "")
-        upgrade = version if previous and version and version != previous else ""
-        previous = version or previous
         cell = entry.get("summary", {}).get(label)
         if not cell:
             continue
+        version = str(entry.get("wheelgap") or "")
+        upgrade = version if previous and version and version != previous else ""
+        previous = version or previous
         packages = entry.get("packages") or 0
         wheels = cell.get("wheel", 0)
         rows.append({
@@ -324,7 +325,10 @@ def trend_html(rows: list[dict], label: str, start: str) -> str:
     if rows[0]["date"] >= start:
         since = f"since the campaign started on {e(start)}"
     else:
-        since = f"for the latest night only: none is recorded yet from the campaign's start on {e(start)}"
+        since = (
+            f"on the latest night that has them ({e(rows[0]['date'])}), as no night from the campaign's start "
+            f"on {e(start)} has them yet"
+        )
     upgrade_note = (
         " A night marked with a wheelgap version is the first scan with that release: its change from the "
         "night before can come from the tool (new targets, or different rules for which wheels count), "
