@@ -44,6 +44,24 @@ function renderMeta() {
   $("package-names").innerHTML = d.packages.map((p) => `<option value="${esc(p.name)}">`).join("");
 }
 
+// data/agreement.json, from scripts/check_pip.py: how often pip agrees with the scan. Built only with textContent,
+// so nothing in the file is read as HTML.
+function renderAgreement(a) {
+  const el = $("agreement");
+  if (!a || typeof a !== "object") return;
+  const { checks, matched } = a;
+  if (!Number.isInteger(checks) || !Number.isInteger(matched) || checks <= 0 || matched < 0 || matched > checks) return;
+  // Round down, so a single mismatch never shows as 100%.
+  const rate = matched === checks ? "100" : (Math.floor((1000 * matched) / checks) / 10).toFixed(1);
+  const when = typeof a.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(a.date) ? ` on ${a.date}` : "";
+  el.textContent = `Cross-checked against pip${when}: wheelgap matches it on ${rate}% of ${fmt(checks)} checks. `;
+  const link = document.createElement("a");
+  link.href = "data/agreement.json";
+  link.textContent = "Details";
+  el.append(link);
+  el.hidden = false;
+}
+
 function renderTabs() {
   $("python-tabs").innerHTML = pythons()
     .map((py) => `<button role="tab" aria-selected="${py === state.python}" data-python="${esc(py)}">${esc(py)}</button>`)
@@ -252,9 +270,10 @@ function renderAll() {
 }
 
 async function main() {
-  const [data, hist] = await Promise.all([
+  const [data, hist, agreement] = await Promise.all([
     fetch("data/coverage.json").then((r) => r.json()),
     fetch("data/history.json").then((r) => (r.ok ? r.json() : [])).catch(() => []),
+    fetch("data/agreement.json").then((r) => (r.ok ? r.json() : null)).catch(() => null),
   ]);
   state.data = data;
   state.history = Array.isArray(hist) ? hist.filter((h) => h && typeof h === "object") : [];
@@ -262,6 +281,7 @@ async function main() {
   const pkg = readHash();
   if (pkg) $("search").value = pkg; // before renderAll(), whose writeHash() would otherwise drop it from the URL
   renderMeta();
+  renderAgreement(agreement);
   renderAll();
   if (pkg) renderLookup(pkg);
 

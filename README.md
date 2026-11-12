@@ -32,6 +32,8 @@ The same scan is also published as [`data/coverage.csv`](https://wheelgap.github
 curl -fsS https://wheelgap.github.io/tracker/data/most-wanted.json
 ```
 
+`data/agreement.json` is the nightly cross-check against pip itself. For the top 200 packages on `3.13 linux-x86_64`, `3.13 linux-aarch64`, `3.13 musl-aarch64` and `3.13 win-arm64`, pip is asked whether it would install a wheel of the version the scan checked (`pip download NAME==VERSION --no-deps --only-binary=:all:` with the target's Python, ABI and every platform tag wheelgap accepts for it), and its answer is compared with the scan's, `wheel` against everything else. The file has `date`, `scan` (the scan's `generated` time), the `wheelgap` and `pip` versions, `top`, `targets`, `checks`, `matched`, and every mismatch as `{name, version, target, wheelgap, pip, file}`, where `pip` is `wheel` or `no wheel` and `file` is the wheel pip downloaded. Cells the scan couldn't look up are counted in `skipped`, and checks pip couldn't answer (a network error) in `errors`; neither counts as a check. The platform tags come from the same wheelgap release as the scan, so this checks how wheelgap reads each release's files, not its tag lists, which [wheelgap's own weekly accuracy check](https://github.com/wheelgap/wheelgap/blob/main/CONTRIBUTING.md#checking-wheelgap-against-pip) covers. It's written by [`scripts/check_pip.py`](scripts/check_pip.py), and a failure never stops the scan: the previous file is kept.
+
 The data is CC0: use it for anything. The code is MIT.
 
 ## API for scripts and agents

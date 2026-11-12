@@ -77,6 +77,15 @@ jobs:
         run: |
           python3 scripts/build_campaigns.py --record-baselines data/coverage.json data/changes.json campaigns.toml data/campaigns \
             || echo "::warning::Couldn't record campaign baselines; the next scan will try again."
+      - name: Cross-check against pip
+        # Extra data (#19): ask pip about the top 200 on four targets and write how often it agrees with the scan.
+        # It must never fail the scan: if it fails or runs out of time, warn, keep the previous agreement.json
+        # and still commit the night's scan. pip only downloads wheels here (--only-binary), never runs one.
+        continue-on-error: true
+        timeout-minutes: 15
+        run: |
+          uv run --no-project --with "$WHEELGAP" --with pip python scripts/check_pip.py data/coverage.json data/agreement.json \
+            || echo "::warning::Couldn't cross-check the scan against pip; keeping the previous agreement.json."
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: data
@@ -84,6 +93,7 @@ jobs:
             data/coverage.json
             data/history.json
             data/changes.json
+            data/agreement.json
             data/campaigns/
 
   commit:
@@ -105,6 +115,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data/coverage.json data/history.json data/changes.json
+          # Absent only until the pip cross-check first succeeds.
+          if [ -f data/agreement.json ]; then git add data/agreement.json; fi
           # Baselines: the artifact comes from a job that ran third-party code, so undo any change to the
           # committed ones and add only new files named data/campaigns/<campaign id>.json.
           if [ -n "$(git ls-files data/campaigns)" ]; then git checkout -- data/campaigns; fi
