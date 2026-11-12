@@ -1,0 +1,6 @@
+[[note]]
+platforms = ["linux-x86_64", "linux-aarch64", "musl-x86_64", "musl-aarch64", "macos-x86_64", "macos-arm64", "pyodide"]
+kind = "workaround"
+text = "pywin32 wraps the Windows APIs and has wheels for Windows only, with no sdist, so it cannot be installed elsewhere. If your project needs it only on Windows, declare it as `pywin32; sys_platform == 'win32'` so other platforms skip it."
+links = ["https://github.com/mhammond/pywin32#readme", "https://pypi.org/project/pywin32/#files", "https://packaging.python.org/en/latest/specifications/dependency-specifiers/#environment-markers"]
+updated = 2026-11-12

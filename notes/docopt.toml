@@ -1,0 +1,6 @@
+[[note]]
+platforms = ["all"]
+kind = "alternative"
+text = "docopt has had no release since 0.6.2 in 2014 and ships an sdist only. docopt-ng, a maintained fork that keeps the `from docopt import docopt` import, has a pure-Python wheel: `pip install docopt-ng`."
+links = ["https://github.com/jazzband/docopt-ng", "https://pypi.org/project/docopt-ng/#files", "https://pypi.org/project/docopt/#history"]
+updated = 2026-11-12
