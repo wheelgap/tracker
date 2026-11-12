@@ -36,6 +36,7 @@ KIND_TEXT = {
     "other-source": "Other source",
 }
 GAP = ("source", "missing")
+SCHEME_RE = re.compile(r"^https://", re.IGNORECASE)  # shown without it; the checker allows only https
 
 # Same order and names as PLATFORM_NAMES in site/app.js.
 PLATFORM_NAMES = {
@@ -118,7 +119,7 @@ def gap_platforms(package: dict, targets: list[dict]) -> list[str]:
 def add_note_url(name: str, platforms: list[str], today: str, exists: bool) -> str:
     """GitHub's new-file page for notes/<name>.toml with a template, or its editor if the file exists."""
     if exists:  # GitHub can't create a file that's already there, and can't pre-fill the editor
-        return f"{REPO_URL}/edit/main/notes/{name}.toml"
+        return f"{REPO_URL}/edit/main/{quote(f'notes/{name}.toml')}"
     listed = ", ".join(f'"{pl}"' for pl in platforms)
     template = (
         f"# The format: {REPO_URL}/blob/main/notes/README.md\n"
@@ -145,7 +146,7 @@ def notes_html(notes: list[dict], name: str, gaps: list[str], today: str, exists
         if "versions" in note:
             meta.append(f"for versions {note['versions']}")
         meta.append(f"checked {note['updated'].isoformat()}")
-        links = " · ".join(f'<a href="{e(u)}">{e(u.removeprefix("https://"))}</a>' for u in note["links"])
+        links = " · ".join(f'<a href="{e(u)}">{e(SCHEME_RE.sub("", u))}</a>' for u in note["links"])
         cards.append(
             '      <div class="card">\n'
             f"        <p>{note_text(note['text'])}</p>\n"

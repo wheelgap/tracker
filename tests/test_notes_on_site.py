@@ -89,6 +89,8 @@ class VersionMatchTests(unittest.TestCase):
         ("==2.1", "2.1.0", True),
         ("!=2.1", "2.1.0", False),
         ("<=2.1", "2.1", True),
+        (">=2.0", "2", True),  # a short version is padded with zeros
+        ("<2.0", "2", False),
         (">2.1", "2.1.0", False),
         (">2.1", "2.1.1", True),
     ]
@@ -97,6 +99,12 @@ class VersionMatchTests(unittest.TestCase):
         for spec, version, expected in self.CASES:
             with self.subTest(spec=spec, version=version):
                 self.assertIs(check_notes.version_matches(spec, version), expected)
+
+    def test_a_spec_the_checker_rejects_never_matches(self):
+        for spec in ("<2.*", ">=2.*", "~=2.1", "2.1", "", "<2,", "==2.1rc1"):
+            with self.subTest(spec=spec):
+                self.assertFalse(check_notes.version_matches(spec, "1.0"))
+                self.assertFalse(check_notes.version_matches(spec, "2.1"))
 
     def test_anything_but_a_plain_release_does_not_match(self):
         for version in ("2.9.1rc1", "2.9.1.post1", "2.9.dev0", "2.9+local", "v2.9", "", None):
@@ -113,6 +121,14 @@ class LoadTests(Temp):
         self.assertEqual(list(loaded), ["good"])
         self.assertEqual(len(warnings), 1)
         self.assertIn("bad.toml", warnings[0])
+
+    def test_a_subdirectory_is_warned_about(self):
+        (self.notes / "nested").mkdir()
+        self.write_note("good", note())
+        warnings = []
+        self.assertEqual(list(check_notes.load(self.notes, scan([]), warn=warnings.append)), ["good"])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("nested: not a file", warnings[0])
 
     def test_missing_directory_has_no_notes(self):
         self.assertEqual(check_notes.load(self.root / "nowhere", scan([])), {})
@@ -157,6 +173,18 @@ class LookupNotesTests(Temp):
         files = self.build([package("pkg", ["wheel", "wheel", "wheel", "missing"])])
         self.assertEqual(len(files["pkg"]["notes"]), 1)
 
+    def test_all_platforms_note_retires_once_every_target_has_a_wheel(self):
+        self.write_note("pkg", note(platforms='["all"]'))
+        files = self.build([package("pkg", ["wheel"] * 4)])
+        self.assertEqual(files["pkg"]["notes"], [])
+
+    def test_note_on_platforms_the_scan_lacks_is_kept(self):
+        # Nothing to judge the note by (no target of its platform in this scan), so it isn't retired.
+        pkg = package("pkg", ["wheel"])
+        targets = [{"label": "3.13 linux-x86_64", "python": "3.13", "platform": "linux-x86_64"}]
+        n = {"platforms": ["musl-aarch64"], "kind": "workaround", "text": "t", "links": ["https://e.x"]}
+        self.assertEqual(check_notes.current([n], pkg, targets), [n])
+
     def test_a_failed_lookup_keeps_its_notes(self):
         self.write_note("pkg", note())
         files = self.build([package("pkg", ["unknown"] * 4, version=None, error="timeout")])
@@ -183,6 +211,16 @@ class PageNotesTests(Temp):
         self.assertIn("Alternative · Alpine ARM64 · checked 2026-11-11", page)
         self.assertIn(f'content="{build_pages.CSP}"', page)
 
+    def test_versions_are_shown_escaped(self):
+        self.write_note("pkg", note(versions=">=2.8, <2.10"))
+        page = self.build([package("pkg", ["wheel", "source", "wheel", "missing"])])["pkg"]
+        self.assertIn("· for versions &gt;=2.8, &lt;2.10 ·", page)
+
+    def test_link_text_drops_the_scheme_whatever_its_case(self):
+        self.write_note("pkg", note(links='["HTTPS://Example.com/docs"]'))
+        page = self.build([package("pkg", ["wheel", "source", "wheel", "missing"])])["pkg"]
+        self.assertIn('<a href="HTTPS://Example.com/docs">Example.com/docs</a>', page)
+
     def test_an_unpaired_backtick_is_left_as_text(self):
         self.assertEqual(build_pages.note_text("a `b` c `d <"), "a <code>b</code> c `d &lt;")
 
@@ -207,6 +245,25 @@ class PageNotesTests(Temp):
     def test_existing_note_file_opens_the_editor_instead(self):
         self.write_note("pkg", note())
         page = self.build([package("pkg", ["wheel", "source", "wheel", "missing"])])["pkg"]
+        self.assertIn('<a href="https://github.com/wheelgap/tracker/edit/main/notes/pkg.toml">Add a note</a>', page)
+
+    def test_unknown_results_are_not_a_gap(self):
+        page = self.build([package("pkg", ["wheel", "unknown", "wheel", "wheel"])])["pkg"]
+        self.assertNotIn("Add a note", page)
+        self.assertNotIn('class="notes"', page)
+
+    def test_page_with_a_note_but_no_gap_has_no_add_link(self):
+        # Current (3.13 musl-aarch64 is unknown, not a wheel) but nothing builds from source or is missing.
+        self.write_note("pkg", note())
+        page = self.build([package("pkg", ["wheel", "unknown", "wheel", "wheel"])])["pkg"]
+        self.assertIn("pkg-binary", page)
+        self.assertNotIn("Add a note", page)
+
+    def test_rejected_note_file_still_gets_the_edit_link(self):
+        self.write_note("pkg", note(kind="nonsense"))
+        with mock.patch("sys.stderr"):
+            page = self.build([package("pkg", ["wheel", "source", "wheel", "missing"])])["pkg"]
+        self.assertIn("No notes for pkg yet.", page)
         self.assertIn('<a href="https://github.com/wheelgap/tracker/edit/main/notes/pkg.toml">Add a note</a>', page)
 
     def test_page_without_a_gap_has_no_notes_section(self):

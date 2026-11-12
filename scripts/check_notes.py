@@ -16,6 +16,7 @@ import json
 import re
 import sys
 import tomllib
+import unicodedata
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -92,7 +93,10 @@ def load(notes_dir: Path, coverage: dict, warn=None) -> dict[str, list[dict]]:
         return {}
     out: dict[str, list[dict]] = {}
     for path in sorted(notes_dir.iterdir()):
-        if path.name == "README.md" or not path.is_file():
+        if path.name == "README.md":
+            continue
+        if not path.is_file():
+            warn(f"skipping {path.name}: not a file (only notes/<name>.toml belong here)")
             continue
         notes, found = _read_file(path, notes_dir, allowed)
         for problem in found:
@@ -156,8 +160,11 @@ def version_matches(spec: str, version: object) -> bool:
 
     Only plain N(.N)* releases are matched. Anything else (a pre-, post- or dev release, a
     local version, or no version) returns False, so a note limited to some versions is
-    hidden rather than shown for a release it may not apply to.
+    hidden rather than shown for a release it may not apply to. So does a spec the checker
+    rejects (valid_specifier), such as "<2.*".
     """
+    if not valid_specifier(spec):
+        return False
     if not isinstance(version, str) or not RELEASE_RE.fullmatch(version):
         return False
     have = _release(version)
@@ -212,12 +219,18 @@ def as_json(note: dict) -> dict:
 
 
 def valid_link(link: object) -> bool:
-    """An https:// URL with a host and no whitespace."""
+    """An https:// URL with a host, and no whitespace, control or format characters or user info.
+
+    The site shows the link itself as its text, so it mustn't be able to hide or disguise its target
+    (a bidi override, or https://docs.python.org@evil.example/).
+    """
     if not isinstance(link, str) or WHITESPACE_RE.search(link):
+        return False
+    if any(unicodedata.category(c) in ("Cc", "Cf") for c in link):
         return False
     try:
         parts = urlsplit(link)
-        return parts.scheme == "https" and bool(parts.hostname)
+        return parts.scheme == "https" and bool(parts.hostname) and "@" not in parts.netloc
     except ValueError:  # e.g. a malformed IPv6 host or port
         return False
 
@@ -274,8 +287,8 @@ def _note_problems(prefix: str, note: dict, allowed: set[str]) -> list[str]:
             out.append(f"{prefix}: links must be a non-empty list")
         elif bad := [link for link in links if not valid_link(link)]:
             out.append(
-                f"{prefix}: links must be https URLs with a host and no spaces "
-                f"(got {bad[0]!r})"
+                f"{prefix}: links must be https URLs with a host, no spaces or control "
+                f"characters and no user@ part (got {bad[0]!r})"
             )
         elif dupes := _duplicates(links):
             out.append(f"{prefix}: duplicate links: {', '.join(dupes)}")
