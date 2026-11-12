@@ -44,6 +44,44 @@ function renderMeta() {
   $("package-names").innerHTML = d.packages.map((p) => `<option value="${esc(p.name)}">`).join("");
 }
 
+// data/agreement.json, from scripts/check_pip.py: how often pip agrees with the scan. Built only with textContent,
+// so nothing in the file is read as HTML, and shown only while it's fresh and well-formed.
+const AGREEMENT_MAX_AGE_DAYS = 3;
+const isCount = (n) => Number.isInteger(n) && n >= 0;
+// Round down, so a single mismatch never shows as 100%.
+const rateText = (matched, checks) => (matched === checks ? "100" : (Math.floor((1000 * matched) / checks) / 10).toFixed(1));
+
+function agreementText(a, now = Date.now()) {
+  if (!a || typeof a !== "object") return null;
+  const { checks, matched, compiled, skipped, errors } = a;
+  if (![checks, matched, skipped, errors].every(isCount) || checks === 0 || matched > checks) return null;
+  if (typeof a.date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(a.date)) return null;
+  const age = (now - Date.parse(`${a.date}T00:00:00Z`)) / 86400000;
+  if (!(age >= -1 && age <= AGREEMENT_MAX_AGE_DAYS)) return null; // a stale check says nothing about today's scan
+  let text =
+    `Cross-checked against pip on ${a.date}, with wheelgap's own tag lists on both sides: ` +
+    `they agree on ${rateText(matched, checks)}% of ${fmt(checks)} checks`;
+  if (compiled && typeof compiled === "object" && [compiled.packages, compiled.checks, compiled.matched].every(isCount) &&
+      compiled.checks > 0 && compiled.matched <= compiled.checks) {
+    text +=
+      `, and on ${rateText(compiled.matched, compiled.checks)}% of the ${fmt(compiled.checks)} for the ` +
+      `${fmt(compiled.packages)} packages without a pure-Python wheel (the rest install everywhere)`;
+  }
+  return `${text}. ${fmt(skipped)} skipped, ${fmt(errors)} without an answer from pip. `;
+}
+
+function renderAgreement(a, now = Date.now()) {
+  const el = $("agreement");
+  const text = agreementText(a, now);
+  el.hidden = text === null;
+  if (text === null) return;
+  el.textContent = text;
+  const link = document.createElement("a");
+  link.href = "data/agreement.json";
+  link.textContent = "Details";
+  el.append(link);
+}
+
 function renderTabs() {
   $("python-tabs").innerHTML = pythons()
     .map((py) => `<button role="tab" aria-selected="${py === state.python}" data-python="${esc(py)}">${esc(py)}</button>`)
@@ -252,9 +290,10 @@ function renderAll() {
 }
 
 async function main() {
-  const [data, hist] = await Promise.all([
+  const [data, hist, agreement] = await Promise.all([
     fetch("data/coverage.json").then((r) => r.json()),
     fetch("data/history.json").then((r) => (r.ok ? r.json() : [])).catch(() => []),
+    fetch("data/agreement.json").then((r) => (r.ok ? r.json() : null)).catch(() => null),
   ]);
   state.data = data;
   state.history = Array.isArray(hist) ? hist.filter((h) => h && typeof h === "object") : [];
@@ -262,6 +301,7 @@ async function main() {
   const pkg = readHash();
   if (pkg) $("search").value = pkg; // before renderAll(), whose writeHash() would otherwise drop it from the URL
   renderMeta();
+  renderAgreement(agreement);
   renderAll();
   if (pkg) renderLookup(pkg);
 
