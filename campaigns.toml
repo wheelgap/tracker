@@ -11,3 +11,18 @@ start = "2026-11-11"
 python = "3.14"
 description = "musllinux aarch64 is what pip installs from in python:*-alpine images on ARM64 hosts such as AWS Graviton, Ampere and Apple-silicon machines running Docker. This page turns the gaps among the most-downloaded packages into a list people can work through, one package at a time."
 how_to = "https://github.com/wheelgap/tracker/blob/main/docs/adding-wheels-upstream.md"
+
+[[campaign]]
+id = "win-arm64"
+title = "Windows on ARM wheels for the top 500"
+platform = "win-arm64"
+top = 500
+start = "2026-11-12"
+python = "3.14"
+description = "Windows on ARM is what Copilot+ PCs and other Snapdragon X laptops run, and with Alpine ARM64 it is one of the two thinnest native platforms on this tracker. GitHub's free windows-11-arm runners for public repositories mean a project can now build and test win_arm64 wheels natively instead of cross-compiling them untested. This page turns the gaps among the most-downloaded packages into a list people can work through, one package at a time."
+sources = [
+    "https://blogs.microsoft.com/blog/2024/05/20/introducing-copilot-pcs/",
+    "https://github.blog/changelog/2025-08-07-arm64-hosted-runners-for-public-repositories-are-now-generally-available/",
+    "https://cibuildwheel.pypa.io/en/stable/platforms/#windows-arm64",
+]
+how_to = "https://github.com/wheelgap/tracker/blob/main/docs/adding-wheels-upstream.md#windows-on-arm-win_arm64"

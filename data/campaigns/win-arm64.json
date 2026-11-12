@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "campaign": "win-arm64",
+  "target": "3.14 win-arm64",
+  "top": 500,
+  "start": "2026-11-12",
+  "recorded": "2026-11-12",
+  "wheelgap": "0.7.0",
+  "packages": [
+    {"name": "cryptography", "rank": 9, "status": "source"},
+    {"name": "pyarrow", "rank": 78, "status": "source"},
+    {"name": "grpcio", "rank": 92, "status": "source"},
+    {"name": "psycopg2-binary", "rank": 146, "status": "source"},
+    {"name": "tiktoken", "rank": 154, "status": "source"},
+    {"name": "psycopg-binary", "rank": 181, "status": "missing"},
+    {"name": "google-crc32c", "rank": 195, "status": "source"},
+    {"name": "grpcio-tools", "rank": 210, "status": "source"},
+    {"name": "pymupdf", "rank": 262, "status": "source"},
+    {"name": "snowflake-connector-python", "rank": 275, "status": "source"},
+    {"name": "litellm", "rank": 295, "status": "source"},
+    {"name": "fastuuid", "rank": 334, "status": "source"},
+    {"name": "ruamel-yaml-clib", "rank": 376, "status": "source"},
+    {"name": "psycopg2", "rank": 390, "status": "source"},
+    {"name": "torch", "rank": 397, "status": "missing"},
+    {"name": "opencv-python-headless", "rank": 449, "status": "source"},
+    {"name": "confluent-kafka", "rank": 494, "status": "source"}
+  ]
+}
