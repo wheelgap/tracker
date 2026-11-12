@@ -1,4 +1,4 @@
-"""Offline checks for the musllinux aarch64 campaign page."""
+"""Offline checks for the campaign pages and their index."""
 
 import json
 import subprocess
@@ -221,6 +221,52 @@ class CampaignTests(unittest.TestCase):
         )
         self.assertIn("1 pages", result.stdout)
         self.assertTrue((self.site / "campaigns" / "musl-aarch64" / "index.html").exists())
+
+    def test_index_lists_every_campaign_with_escaped_titles(self):
+        self.config.write_text(CONFIG + """
+[[campaign]]
+id = "win-arm64"
+title = "Windows <ARM> & friends"
+platform = "musl-aarch64"
+top = 3
+start = "2026-11-11"
+python = "3.13"
+""", encoding="utf-8")
+        self.write_inputs()
+        self.assertEqual(
+            build_campaigns.build(self.coverage, self.history, self.changes, self.config, self.site), 2
+        )
+        index = (self.site / "campaigns" / "index.html").read_text(encoding="utf-8")
+        rows = index.split("<tbody>", 1)[1].split("</tbody>", 1)[0]
+        first, second = [line for line in rows.splitlines() if "<tr>" in line]
+        # Config order, each linked to its own page, with platform, coverage share and to-do count.
+        self.assertIn('<a href="musl-aarch64/">musllinux aarch64 wheels for the top 500</a>', first)
+        self.assertIn("Alpine ARM64", first)
+        self.assertIn("<strong>50%</strong>", first)
+        self.assertIn("<td>1</td>", first)  # psycopg2
+        self.assertIn('<a href="win-arm64/">Windows &lt;ARM&gt; &amp; friends</a>', second)
+        self.assertNotIn("<ARM>", index)
+        # Top 3 on 3.13: requests has the wheel, NumPy and psycopg2 don't (1 of 3), both to do.
+        self.assertIn("1 of 3", second)
+        self.assertIn("<td>2</td>", second)
+        self.assertNotIn("<script", index)
+        self.assertIn('href="../style.css"', index)
+        self.assertIn(build_campaigns.CSP, index)
+        # Each campaign page links back to the index.
+        page = (self.site / "campaigns" / "win-arm64" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('<a href="../">Campaigns</a>', page)
+
+    def test_index_is_in_the_sitemap(self):
+        self.write_inputs()
+        build_pages.build(self.coverage, self.site)
+        build_campaigns.build(self.coverage, self.history, self.changes, self.config, self.site)
+        sitemap = (self.site / "sitemap.xml").read_text(encoding="utf-8")
+        self.assertIn("<loc>https://wheelgap.github.io/tracker/campaigns/</loc>", sitemap)
+
+    def test_home_page_footer_links_the_campaigns_index(self):
+        home = (Path(__file__).resolve().parents[1] / "site" / "index.html").read_text(encoding="utf-8")
+        footer = home.split("<footer", 1)[1]
+        self.assertIn('<a href="campaigns/">Campaigns</a>', footer)
 
     def test_rejects_unknown_scan_schema(self):
         self.scan["schema"] = 2
