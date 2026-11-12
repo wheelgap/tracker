@@ -93,7 +93,35 @@ class CampaignTests(unittest.TestCase):
         return (self.site / "campaigns" / "musl-aarch64" / "index.html").read_text(encoding="utf-8")
 
     def todo(self, page: str) -> str:
-        return page.split(">To do</h2>", 1)[1].split("Left out:", 1)[0].split(">Done</h2>", 1)[0]
+        return (
+            page.split(">To do</h2>", 1)[1].split("Left out:", 1)[0].split(">Has an alternative</h2>", 1)[0]
+            .split(">Done</h2>", 1)[0]
+        )
+
+    def set_aside(self, page: str) -> str:
+        if ">Has an alternative</h2>" not in page:
+            return ""
+        return page.split(">Has an alternative</h2>", 1)[1].split(">Done</h2>", 1)[0]
+
+    def page_with_note(self, kind, platforms='["musl-aarch64"]', versions=None) -> str:
+        notes = self.root / "notes"
+        notes.mkdir(exist_ok=True)
+        extra = f'versions = "{versions}"\n' if versions else ""
+        (notes / "psycopg2.toml").write_text(
+            "[[note]]\n"
+            f"platforms = {platforms}\n"
+            f'kind = "{kind}"\n'
+            'text = "Use psycopg2-binary."\n'
+            'links = ["https://www.psycopg.org/docs/install.html"]\n'
+            f"{extra}"
+            "updated = 2026-11-11\n",
+            encoding="utf-8",
+        )
+        self.write_inputs()
+        build_campaigns.build(
+            self.coverage, self.history, self.changes, self.config, self.site, notes_dir=notes
+        )
+        return (self.site / "campaigns" / "musl-aarch64" / "index.html").read_text(encoding="utf-8")
 
     def test_uses_newest_non_free_threaded_python_and_top_n(self):
         page = self.built_page()
@@ -110,6 +138,45 @@ class CampaignTests(unittest.TestCase):
         page = self.built_page()
         # requests is pure Python; NumPy, psycopg2 and newpy have compiled code, and only NumPy has the wheel.
         self.assertIn("Of the 3 with compiled code, <strong>33.3%</strong> have one (1 of 3)", page)
+
+    def test_alternative_note_moves_the_row_out_of_to_do(self):
+        page = self.page_with_note("alternative")
+        self.assertNotIn("psycopg2", self.todo(page))
+        moved = self.set_aside(page)
+        self.assertIn("psycopg2", moved)
+        self.assertIn(
+            '<a href="https://github.com/wheelgap/tracker/blob/main/notes/psycopg2.toml">has a note</a>', moved
+        )
+        self.assertIn("0 still need one.", page)  # psycopg2 was the only to-do row
+        self.assertIn("(1 more with an alternative is listed below)", page)
+        index = (self.site / "campaigns" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("<td>0</td></tr>", index)
+
+    def test_all_platforms_alternative_note_also_moves_the_row(self):
+        page = self.page_with_note("alternative", platforms='["all"]')
+        self.assertNotIn("psycopg2", self.todo(page))
+        self.assertIn("psycopg2", self.set_aside(page))
+
+    def test_informational_note_keeps_the_row_with_the_marker(self):
+        for kind in ("workaround", "upstream-issue", "other-source"):
+            with self.subTest(kind=kind):
+                page = self.page_with_note(kind)
+                todo = self.todo(page)
+                self.assertIn("psycopg2", todo)
+                self.assertIn("notes/psycopg2.toml\">has a note</a>", todo)
+                self.assertIn("A package with a note links it", page)
+                self.assertNotIn("Has an alternative", page)
+                self.assertIn("1 still need one.", page)
+
+    def test_note_for_another_platform_or_version_is_ignored(self):
+        # psycopg2 lacks a pyodide wheel too, so that note is current, just not for this campaign.
+        for platforms, versions in (('["pyodide"]', None), ('["musl-aarch64"]', "<2")):
+            with self.subTest(platforms=platforms, versions=versions):
+                page = self.page_with_note("alternative", platforms=platforms, versions=versions)
+                self.assertIn("psycopg2", self.todo(page))
+                self.assertNotIn("has a note", page)
+                self.assertNotIn("Has an alternative", page)
+                self.assertNotIn("A package with a note links it", page)
 
     def test_lookup_errors_are_left_out_and_said(self):
         page = self.built_page()

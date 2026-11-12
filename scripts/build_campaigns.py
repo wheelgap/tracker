@@ -19,6 +19,11 @@ nightly scan runs this and commits the files, so a campaign's Done list and
 progress don't depend on changes.json, which only keeps 90 days. The page
 build reads them from data/campaigns next to coverage.json (or the directory
 given as a sixth argument).
+
+To-do rows are checked against the repository's notes/*.toml, read through
+check_notes.py. A package with a current note for the campaign's platform gets a
+"has a note" link, and one whose note is an alternative (kind "alternative")
+moves out of To do into its own list.
 """
 
 from __future__ import annotations
@@ -31,11 +36,22 @@ import sys
 import tomllib
 from pathlib import Path
 
+if __package__:  # imported as scripts.build_campaigns (the tests)
+    from . import check_notes
+else:  # run as python scripts/build_campaigns.py
+    import check_notes
+
 SCAN_SCHEMA = 1
 BASELINE_SCHEMA = 1
 SAFE_ID = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
 SAFE_NAME = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
 BASE_URL = "https://wheelgap.github.io/tracker/"
+NOTES_URL = "https://github.com/wheelgap/tracker/blob/main/notes/"
+NOTES_DIR = Path(__file__).resolve().parent.parent / "notes"
+# Note kinds (notes/README.md) that mean the campaign shouldn't ask upstream for this wheel. Only
+# "alternative" says that: a different package or extra has it. None of the kinds records that upstream
+# declined; "upstream-issue" is a ticket to follow, so those rows stay in To do with the marker.
+SET_ASIDE_KINDS = ("alternative",)
 PLATFORM_NAMES = {
     "linux-x86_64": "Linux x86_64",
     "linux-aarch64": "Linux ARM64",
@@ -223,6 +239,14 @@ def todo_list(packages: list[dict], index: int, indexes: list[int]) -> list[dict
             "canonical": canonical(package["name"]),
         })
     return rows
+
+
+def platform_notes(notes: list[dict], package: dict, targets: list[dict], platform: str) -> list[dict]:
+    """The package's current notes (check_notes.current) that cover the campaign's platform."""
+    return [
+        note for note in check_notes.current(notes, package, targets)
+        if note["platforms"] == ["all"] or platform in note["platforms"]
+    ]
 
 
 def gains_since(changes: list[dict], label: str, start: str) -> dict[str, dict]:
@@ -428,6 +452,8 @@ def rows_html(items: list[dict], *, kind: str, include_source: bool) -> str:
             f' <span class="ver">{e(item["version"])}</span>'
             f' · <a href="https://pypi.org/project/{e(name)}/">PyPI</a>'
         )
+        if item.get("note"):
+            pkg += f' · <a href="{e(item["note"])}">has a note</a>'
         if kind == "done":
             was = STATUS_TEXT.get(item["frm"], item["frm"])
             cells = f'<td>{e(item["date"])}</td><td>{pkg}</td><td>{e(was)}</td>'
@@ -491,9 +517,19 @@ def trend_html(rows: list[dict], label: str, start: str) -> str:
 
 
 def page(
-    campaign: dict, scan: dict, history: list, changes: list, python: str, baseline: dict | None = None
+    campaign: dict,
+    scan: dict,
+    history: list,
+    changes: list,
+    python: str,
+    baseline: dict | None = None,
+    notes: dict[str, list[dict]] | None = None,
 ) -> tuple[str, dict]:
-    """The campaign's page, and the numbers the campaigns index lists for it."""
+    """The campaign's page, and the numbers the campaigns index lists for it.
+
+    notes are check_notes.load()'s notes by canonical name. To-do rows with a current note for the
+    platform link it, and those with a SET_ASIDE_KINDS note move to their own list, out of To do.
+    """
     e = html.escape
     platform = campaign["platform"]
     top = campaign["top"]
@@ -513,6 +549,15 @@ def page(
     if include_source:
         for item in todo:
             item["source"] = source_url(next(p for p in packages if p["name"] == item["name"]))
+    set_aside = []
+    for item in todo:
+        package = next(p for p in packages if p["name"] == item["name"])
+        found = platform_notes((notes or {}).get(item["canonical"], []), package, scan["targets"], platform)
+        if found:
+            item["note"] = f"{NOTES_URL}{item['canonical']}.toml"
+        if any(note["kind"] in SET_ASIDE_KINDS for note in found):
+            set_aside.append(item)
+    todo = [item for item in todo if item not in set_aside]
     recorded = baseline is not None
     if baseline is None:
         baseline = baseline_for(campaign, scan, changes, python)
@@ -538,6 +583,22 @@ def page(
             f"no Python {e(python)} wheel for any {e(os_name)} platform yet ({names}). That's a gap for the project "
             f"as a whole (a new Python, an sdist-only release, or no {e(os_name)} wheels by design), not one this "
             "campaign should ask about.</p>\n"
+        )
+    read_notes = " A package with a note links it: read the note first." if any(i.get("note") for i in todo) else ""
+    set_aside_count = set_aside_html = ""
+    if set_aside:
+        one = len(set_aside) == 1
+        set_aside_count = f" ({len(set_aside)} more with an alternative {'is' if one else 'are'} listed below)"
+        not_counted = "It isn't" if one else "They aren't"
+        set_aside_html = (
+            "    <section>\n"
+            "      <h2>Has an alternative</h2>\n"
+            f'      <p class="note">{len(set_aside)} of the top {top} packages {"lacks" if one else "lack"} '
+            f"{e(article(platform_name))} {e(platform_name)} wheel but {'has' if one else 'have'} a note naming a "
+            "different package or extra that has one, so this campaign doesn't ask upstream about "
+            f"{'it' if one else 'them'}. {not_counted} counted in To do.</p>\n"
+            f"{rows_html(set_aside, kind='todo', include_source=include_source)}"
+            "    </section>\n"
         )
     sources_html = ""
     if campaign.get("sources"):
@@ -625,9 +686,9 @@ def page(
 {trend_html(trend(history, label, campaign["start"]), label, campaign["start"])}    </section>
     <section>
       <h2>To do</h2>
-      <p class="note">{len(todo)} of the top {top} packages have Python {e(python)} wheels for other platforms but not {e(platform_name)}, most-downloaded first. {e(ASK_FIRST)}{how_to_html}</p>
+      <p class="note">{len(todo)} of the top {top} packages have Python {e(python)} wheels for other platforms but not {e(platform_name)}, most-downloaded first{set_aside_count}.{read_notes} {e(ASK_FIRST)}{how_to_html}</p>
 {rows_html(todo, kind="todo", include_source=include_source)}{waiting_html}    </section>
-    <section>
+{set_aside_html}    <section>
       <h2>Done</h2>
       <p>{progress}</p>
 {f'      <p class="note">{done_note}</p>{chr(10)}' if done_note else ""}{"" if mismatch else rows_html(done, kind="done", include_source=False)}    </section>
@@ -758,8 +819,11 @@ def build(
     config_path: Path,
     site: Path,
     baselines: Path | None = None,
+    notes_dir: Path | None = None,
 ) -> int:
+    """Write the pages; notes come from notes_dir, or none when it is None."""
     scan = load_scan(coverage_path)
+    notes = check_notes.load(notes_dir, scan) if notes_dir is not None else {}
     if baselines is None:
         baselines = coverage_path.parent / "campaigns"
     history = json.loads(history_path.read_text(encoding="utf-8")) if history_path.exists() else []
@@ -774,7 +838,7 @@ def build(
         out = site / "campaigns" / ident
         out.mkdir(parents=True, exist_ok=True)
         baseline = load_baseline(baselines / f"{ident}.json")
-        text, listing = page(campaign, scan, history, changes, python, baseline)
+        text, listing = page(campaign, scan, history, changes, python, baseline, notes)
         (out / "index.html").write_text(text, encoding="utf-8")
         listings.append(listing)
         urls.append(f"{BASE_URL}campaigns/{ident}/")
@@ -794,4 +858,5 @@ if __name__ == "__main__":
     else:
         coverage, history, changes, config, site = (Path(p) for p in sys.argv[1:6])
         baselines = Path(sys.argv[6]) if len(sys.argv) > 6 else None
-        print(f"campaigns: {build(coverage, history, changes, config, site, baselines)} pages in {site / 'campaigns'}")
+        built = build(coverage, history, changes, config, site, baselines, NOTES_DIR)
+        print(f"campaigns: {built} pages in {site / 'campaigns'}")
