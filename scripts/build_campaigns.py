@@ -13,7 +13,8 @@ Runs at publish time; the pages are not committed. The pages are plain HTML
         data/changes.json campaigns.toml data/campaigns
 
 Writes data/campaigns/<id>.json, the campaign's starting to-do list, for each
-campaign that doesn't have one yet; an existing file is never rewritten. The
+campaign that doesn't have one yet, once its start has come and every package in
+its top N was looked up; an existing file is never rewritten. The
 nightly scan runs this and commits the files, so a campaign's Done list and
 progress don't depend on changes.json, which only keeps 90 days. The page
 build reads them from data/campaigns next to coverage.json (or the directory
@@ -222,10 +223,13 @@ def todo_list(packages: list[dict], index: int, indexes: list[int]) -> list[dict
 
 
 def gains_since(changes: list[dict], label: str, start: str) -> dict[str, dict]:
-    """The first gain of a wheel on the target on or after start, per canonical name."""
+    """The first gain of a wheel on the target after start, per canonical name.
+
+    A change dated on the start night is already in that night's scan, so only later nights count.
+    """
     first: dict[str, dict] = {}
     for entry in sorted(changes, key=lambda c: c.get("date", "")):
-        if entry.get("date", "") < start:
+        if entry.get("date", "") <= start:
             continue
         for item in entry.get("gained", []):
             if item.get("target") == label and item.get("to") == "wheel":
@@ -233,36 +237,72 @@ def gains_since(changes: list[dict], label: str, start: str) -> dict[str, dict]:
     return first
 
 
+def status_at_start(changes: list[dict], key: str, label: str, start: str, now: str) -> str:
+    """A package's result on a target on the start night: the "from" of its first change after start, else now."""
+    for entry in sorted(changes, key=lambda c: c.get("date", "")):
+        if entry.get("date", "") <= start:
+            continue
+        for item in entry.get("gained", []) + entry.get("lost", []):
+            if item.get("target") == label and canonical(item.get("name", "")) == key:
+                return item.get("from") or ""
+    return now
+
+
 def baseline_for(campaign: dict, scan: dict, changes: list[dict], python: str) -> dict:
     """The campaign's starting to-do list, from this scan and the change log.
 
-    It is today's to-do list, plus packages in the top N that gained a wheel on the target on or after
-    the campaign's start (with their status before that gain), so a baseline recorded a few nights after
-    the start still holds what was on the list at the start.
+    It is today's to-do list, plus packages in the top N that gained a wheel on the target after the
+    campaign's start and were on the to-do list then: no wheel on the target, and a wheel for the
+    campaign's Python on another platform of the same OS (so not "left out"), going by the change log.
+    A baseline recorded after its start is a reconstruction; "recorded" says when it was made.
     """
     platform = campaign["platform"]
-    index = target_index(scan["targets"], python, platform)
-    label = scan["targets"][index]["label"]
+    targets = scan["targets"]
+    index = target_index(targets, python, platform)
+    label = targets[index]["label"]
+    indexes = native_indexes(targets, python, platform)
     packages = top_packages(scan, campaign["top"])
     rows = {
         canonical(item["name"]): {"name": item["name"], "rank": item["rank"], "status": item["status"]}
-        for item in todo_list(packages, index, native_indexes(scan["targets"], python, platform))
+        for item in todo_list(packages, index, indexes)
     }
-    gained = gains_since(changes, label, campaign["start"])
+    start = campaign["start"]
+    gained = gains_since(changes, label, start)
     for package in packages:
         key = canonical(package["name"])
-        if key in gained and key not in rows and not package.get("error"):
-            rows[key] = {"name": package["name"], "rank": package["rank"], "status": gained[key].get("from") or ""}
+        if key not in gained or key in rows or package.get("error"):
+            continue
+        then = {
+            i: status_at_start(changes, key, targets[i]["label"], start, package["results"][i]) for i in indexes
+        }
+        if then[index] == "wheel" or not any(then[i] == "wheel" for i in indexes if i != index):
+            continue
+        rows[key] = {"name": package["name"], "rank": package["rank"], "status": then[index]}
     return {
         "schema": BASELINE_SCHEMA,
         "campaign": campaign["id"],
         "target": label,
         "top": campaign["top"],
-        "start": campaign["start"],
+        "start": start,
         "recorded": str(scan["generated"])[:10],
         "wheelgap": str(scan["wheelgap"]),
         "packages": sorted(rows.values(), key=lambda r: r["rank"]),
     }
+
+
+def unrecordable(campaign: dict, scan: dict, python: str) -> str | None:
+    """Why a baseline shouldn't be frozen from this scan, or None if it can be."""
+    generated = str(scan["generated"])[:10]
+    if campaign["start"] > generated:
+        return f"starts on {campaign['start']}, after this scan ({generated})"
+    index = target_index(scan["targets"], python, campaign["platform"])
+    failed = [
+        p["name"] for p in top_packages(scan, campaign["top"])
+        if p.get("error") or p["results"][index] == "unknown"
+    ]
+    if failed:
+        return f"{len(failed)} of its top {campaign['top']} couldn't be looked up ({', '.join(failed[:5])})"
+    return None
 
 
 def load_baseline(path: Path) -> dict | None:
@@ -277,15 +317,30 @@ def load_baseline(path: Path) -> dict | None:
         for p in packages
     ):
         sys.exit(f"build_campaigns: {path} needs a packages list of {{name, status}}")
-    for field in ("target", "start", "recorded"):
+    for field in ("campaign", "target", "start", "recorded"):
         if not isinstance(data.get(field), str):
             sys.exit(f"build_campaigns: {path} is missing {field!r}")
+    if not isinstance(data.get("top"), int) or isinstance(data.get("top"), bool):
+        sys.exit(f"build_campaigns: {path} is missing 'top'")
+    # A hand edit can repeat a package; count it once.
+    seen: set[str] = set()
+    data["packages"] = [
+        p for p in packages if canonical(p["name"]) not in seen and not seen.add(canonical(p["name"]))
+    ]
     return data
 
 
-def done_list(baseline: dict, packages: list[dict], index: int, label: str, changes: list[dict]) -> list[dict]:
-    """Baseline packages that have a wheel on the target in this scan.
+def baseline_mismatch(baseline: dict, campaign: dict, label: str) -> list[str]:
+    """The settings a recorded baseline doesn't share with campaigns.toml, as "field: baseline value"."""
+    expected = {"campaign": campaign["id"], "top": campaign["top"], "start": campaign["start"], "target": label}
+    return [f"{field} {baseline.get(field)}" for field, value in expected.items() if baseline.get(field) != value]
 
+
+def done_list(baseline: dict, packages: list[dict], index: int, label: str, changes: list[dict]) -> list[dict]:
+    """Baseline packages that have a wheel on the target in this scan, wherever they now rank.
+
+    packages is the whole scan, not the campaign's top N: a package that gained the wheel and then
+    slipped below the top N is still done. Only one that left the scan altogether can't be checked.
     A package that gained the wheel and lost it again isn't done. The date is the latest gain in
     changes.json; once that has aged out of the log (or fell on a night the log skips), it's "before"
     the oldest night still in the log, or "not in the log".
@@ -302,7 +357,7 @@ def done_list(baseline: dict, packages: list[dict], index: int, label: str, chan
     for item in baseline["packages"]:
         key = canonical(item["name"])
         package = current.get(key)
-        if package is None or package.get("error") or not has_wheel(package, index):
+        if package is None or not has_wheel(package, index):  # an errored package has no "wheel"
             continue
         date = latest.get(key, "")
         if date:
@@ -458,7 +513,8 @@ def page(
     recorded = baseline is not None
     if baseline is None:
         baseline = baseline_for(campaign, scan, changes, python)
-    done = done_list(baseline, packages, index, label, changes)
+    mismatch = baseline_mismatch(baseline, campaign, label) if recorded else []
+    done = [] if mismatch else done_list(baseline, scan["packages"], index, label, changes)
     platform_name = PLATFORM_NAMES.get(platform, platform)
     title = campaign["title"]
     url = f"{BASE_URL}campaigns/{campaign['id']}/"
@@ -487,30 +543,42 @@ def page(
         if campaign.get("python")
         else " (the newest non-free-threaded Python, as the badges use)"
     )
+    baseline_file = f"data/campaigns/{e(campaign['id'])}.json"
+    start = e(campaign["start"])
     if recorded:
-        done_note = (
-            f"The starting list was recorded from the {e(baseline['recorded'])} scan in "
-            f"data/campaigns/{e(campaign['id'])}.json (with any package that gained the wheel between the start "
-            "and then). A package that gained the wheel and lost it again isn't counted."
-        )
-        if baseline["target"] != label:
-            done_note += f" It was recorded for {e(baseline['target'])}; progress is measured on {e(label)}."
+        done_note = f"The starting list is recorded in {baseline_file}."
+        if baseline["recorded"] > campaign["start"]:
+            done_note = (
+                f"The starting list in {baseline_file} was reconstructed on {e(baseline['recorded'])} from that "
+                "night's to-do list and the change log since the start."
+            )
     else:
         done_note = (
             "The starting list isn't recorded yet (the next nightly scan writes it), so for now it is today's "
             "to-do list plus the packages that gained the wheel since the start."
         )
-    if baseline["packages"]:
+    count = len(baseline["packages"])
+    if mismatch:
         progress = (
-            f'<strong>{len(done):,} of the {len(baseline["packages"]):,}</strong> packages on the to-do list at the '
-            f'start ({e(baseline["start"])}) now have {e(article(platform_name))} {e(platform_name)} wheel.'
+            f"No progress to show: {baseline_file} was recorded for other settings "
+            f"({e(', '.join(mismatch))}). Delete it to record a new starting list with the next nightly scan."
+        )
+        done_note = ""
+    elif count:
+        progress = (
+            f'<strong>{len(done):,} of the {count:,}</strong> {"package" if count == 1 else "packages"} on the '
+            f"to-do list at the start ({start}) now {'has' if len(done) == 1 else 'have'} "
+            f"{e(article(platform_name))} {e(platform_name)} wheel."
         )
     else:
-        progress = f'Nothing was on the to-do list at the start ({e(baseline["start"])}).'
-    done_note += (
-        f" Dates are from the nightly change log, which keeps the last {CHANGES_KEPT_DAYS} days and skips "
-        "nights when the scan moved to a new wheelgap version. Was is the status at the start."
-    )
+        progress = f"Nothing was on the to-do list at the start ({start})."
+    if done_note:
+        done_note += (
+            " A package that gained the wheel and lost it again isn't counted, and To do can include packages "
+            "that weren't on the list at the start (new to the top), which don't count here either. Dates are "
+            f"from the nightly change log, which keeps the last {CHANGES_KEPT_DAYS} days and skips nights when "
+            "the scan moved to a new wheelgap version. Was is the status at the start."
+        )
     generated = str(scan["generated"])[:10]
     listing = {
         "id": campaign["id"],
@@ -555,8 +623,7 @@ def page(
     <section>
       <h2>Done</h2>
       <p>{progress}</p>
-      <p class="note">{done_note}</p>
-{rows_html(done, kind="done", include_source=False)}    </section>
+{f'      <p class="note">{done_note}</p>{chr(10)}' if done_note else ""}{"" if mismatch else rows_html(done, kind="done", include_source=False)}    </section>
   </main>
 </body>
 </html>
@@ -648,8 +715,14 @@ def dump_baseline(baseline: dict) -> str:
     return "{\n" + "\n".join(lines) + '\n  "packages": [\n' + packages + "\n  ]\n}\n"
 
 
-def record_baselines(coverage_path: Path, changes_path: Path, config_path: Path, out: Path) -> list[str]:
-    """Write out/<id>.json for each campaign without one; return the ids written."""
+def record_baselines(
+    coverage_path: Path, changes_path: Path, config_path: Path, out: Path, log=print
+) -> list[str]:
+    """Write out/<id>.json for each campaign without one; return the ids written.
+
+    A campaign that hasn't started yet, or whose top N had a failed lookup in this scan, is skipped
+    and tried again the next night, so a baseline is never frozen from an imperfect scan.
+    """
     scan = load_scan(coverage_path)
     changes = json.loads(changes_path.read_text(encoding="utf-8")) if changes_path.exists() else []
     campaigns = load_campaigns(config_path)
@@ -659,7 +732,12 @@ def record_baselines(coverage_path: Path, changes_path: Path, config_path: Path,
         path = out / f"{campaign['id']}.json"
         if path.exists():
             continue
-        baseline = baseline_for(campaign, scan, changes, campaign.get("python") or newest)
+        python = campaign.get("python") or newest
+        reason = unrecordable(campaign, scan, python)
+        if reason:
+            log(f"campaigns: not recording {campaign['id']} yet: {reason}")
+            continue
+        baseline = baseline_for(campaign, scan, changes, python)
         out.mkdir(parents=True, exist_ok=True)
         path.write_text(dump_baseline(baseline), encoding="utf-8")
         written.append(campaign["id"])
