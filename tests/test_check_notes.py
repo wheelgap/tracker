@@ -284,6 +284,25 @@ class CheckNotesTests(unittest.TestCase):
                 found = self.problems()
                 self.assertTrue(any("links must be https" in p for p in found), found)
 
+    def test_links_with_control_characters_or_user_info_are_rejected(self):
+        # TOML escapes, so the file holds the real characters: NUL, DEL, a zero-width space, a bidi override.
+        for bad in (
+            "https://example.com/\\u0000",
+            "https://example.com/\\u007f",
+            "https://example.com/\\u200b",
+            "https://example.com/\\u202egnp.exe",
+            "https://docs.python.org@evil.example/",
+            "https://user:pass@example.com/",
+        ):
+            with self.subTest(link=bad):
+                self.write("psycopg2.toml", note_toml(links=f'["{bad}"]'))
+                found = self.problems()
+                self.assertTrue(any("links must be https" in p for p in found), found)
+
+    def test_link_with_an_at_sign_in_the_path_is_accepted(self):
+        self.write("psycopg2.toml", note_toml(links='["https://example.com/@user/pkg"]'))
+        self.assertEqual(self.problems(), [])
+
     def test_future_updated_date_is_reported(self):
         self.write("psycopg2.toml", note_toml(updated="2999-01-01"))
         found = self.problems()

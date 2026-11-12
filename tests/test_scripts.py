@@ -164,8 +164,10 @@ class BuildLookupTests(TempDir):
         one = json.loads((out / "typing-extensions.json").read_text(encoding="utf-8"))
         # The fields the README's "API for scripts and agents" section promises.
         self.assertEqual(
-            set(one), {"schema", "name", "version", "rank", "pure", "error", "generated", "wheelgap", "results"}
+            set(one),
+            {"schema", "name", "version", "rank", "pure", "error", "generated", "wheelgap", "results", "notes"},
         )
+        self.assertEqual(one["notes"], [])  # no notes directory given
         self.assertEqual(one["schema"], 1)
         self.assertEqual(one["name"], "typing-extensions")
         self.assertEqual(one["generated"], data["generated"])
