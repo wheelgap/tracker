@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "campaign": "musl-aarch64",
+  "target": "3.14 musl-aarch64",
+  "top": 500,
+  "start": "2026-11-11",
+  "recorded": "2026-11-12",
+  "wheelgap": "0.7.0",
+  "packages": [
+    {"name": "scikit-learn", "rank": 155, "status": "source"},
+    {"name": "matplotlib", "rank": 172, "status": "source"},
+    {"name": "google-crc32c", "rank": 195, "status": "source"},
+    {"name": "playwright", "rank": 253, "status": "source"},
+    {"name": "pymupdf", "rank": 262, "status": "source"},
+    {"name": "snowflake-connector-python", "rank": 275, "status": "source"},
+    {"name": "onnxruntime", "rank": 285, "status": "missing"},
+    {"name": "watchdog", "rank": 289, "status": "source"},
+    {"name": "lz4", "rank": 319, "status": "source"},
+    {"name": "pymongo", "rank": 362, "status": "source"},
+    {"name": "duckdb", "rank": 366, "status": "source"},
+    {"name": "llvmlite", "rank": 386, "status": "source"},
+    {"name": "numba", "rank": 387, "status": "source"},
+    {"name": "torch", "rank": 397, "status": "missing"},
+    {"name": "zope-interface", "rank": 427, "status": "source"},
+    {"name": "opencv-python-headless", "rank": 449, "status": "source"},
+    {"name": "triton", "rank": 473, "status": "missing"},
+    {"name": "tree-sitter", "rank": 480, "status": "source"},
+    {"name": "confluent-kafka", "rank": 494, "status": "source"}
+  ]
+}
