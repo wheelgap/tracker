@@ -33,7 +33,7 @@ These six are the only keys a note may have; the checker rejects any other.
 
 A note also retires itself once the scan shows a wheel on every platform it lists, meaning every Python target of that platform (3.13, 3.14, 3.14t and so on) has one. A note has no Python field, so it stays shown while any one of those targets lacks a wheel, even if the gap it describes (say, on 3.13) has closed and only free-threaded 3.14t is left. Because `["all"]` includes pyodide, where few compiled packages have wheels, such notes rarely retire; list named platforms when you can. A retired note stays in its file, so it can be updated or removed by hand.
 
-On the site, a note's text is escaped and only backticks become code. A file the checker rejects is left out of the site whole, with a warning in the publish log.
+On the site, a note's text is escaped and only backticks become code. Campaign pages link a note from the package's to-do row when it covers the campaign's platform, and an `alternative` note moves the package out of To do, since there's nothing to ask upstream for. A file the checker rejects is left out of the site whole, with a warning in the publish log.
 
 ## Checking
 
