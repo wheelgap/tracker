@@ -1,0 +1,15 @@
+[[note]]
+platforms = ["macos-x86_64"]
+kind = "other-source"
+text = "cryptography 49.0.0 removed support for x86_64 macOS and now publishes arm64-only macOS wheels. On an Intel Mac, conda-forge still builds cryptography for osx-64: `conda install -c conda-forge cryptography`."
+links = ["https://cryptography.io/en/latest/changelog/#v49-0-0", "https://anaconda.org/conda-forge/cryptography/files", "https://github.com/conda-forge/cryptography-feedstock"]
+versions = ">=49"
+updated = 2026-11-12
+
+[[note]]
+platforms = ["win-arm64"]
+kind = "other-source"
+text = "cryptography stopped publishing Windows on Arm wheels in 46.0.4 because of problems with the CI runners (pyca/cryptography#14216). conda-forge builds cryptography for win-arm64 on Python 3.14 and later (it has no older Python for that platform): `conda install -c conda-forge cryptography`."
+links = ["https://github.com/pyca/cryptography/pull/14216", "https://anaconda.org/conda-forge/cryptography/files", "https://github.com/conda-forge/cryptography-feedstock"]
+versions = ">=46.0.4"
+updated = 2026-11-12

@@ -1,0 +1,6 @@
+[[note]]
+platforms = ["linux-x86_64", "linux-aarch64", "musl-x86_64", "musl-aarch64", "macos-x86_64", "macos-arm64", "win-amd64", "win-arm64"]
+kind = "workaround"
+text = "backports.zstd requires Python older than 3.14, because 3.14 added the same module to the standard library as `compression.zstd`. Declare it as `backports.zstd; python_version < '3.14'` and import `compression.zstd` on 3.14 and later, as its README shows."
+links = ["https://github.com/rogdham/backports.zstd#install", "https://pypi.org/project/backports.zstd/", "https://docs.python.org/3.14/library/compression.zstd.html"]
+updated = 2026-11-12
