@@ -124,7 +124,7 @@ class AgreementTests(unittest.TestCase):
     def test_top_by_rank_and_chosen_targets(self):
         packages = [package(rank, f"pkg{rank}", ["source"] * 3) for rank in (5, 1, 3)]
         result, pip = run(packages, {}, labels=["3.13 win-arm64"], top=2)
-        self.assertEqual([args[-1] for args in pip.calls], ["pkg1==1.0", "pkg3==1.0"])
+        self.assertEqual(sorted(args[-1] for args in pip.calls), ["pkg1==1.0", "pkg3==1.0"])  # workers: any order
         self.assertEqual((result["targets"], result["top"], result["checks"]), (["3.13 win-arm64"], 2, 2))
 
     def test_unknown_target_is_an_error(self):
