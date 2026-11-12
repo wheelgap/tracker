@@ -4,6 +4,9 @@
 
 Standard library only. Exit 0 when every file in notes_dir (except README.md)
 is a valid notes/<normalized-name>.toml. Print one problem per line otherwise.
+
+build_lookup.py and build_pages.py read notes through load() and current() here,
+so the site shows only notes this checker accepts.
 """
 
 from __future__ import annotations
@@ -29,6 +32,9 @@ SPEC_CLAUSE_RE = re.compile(
     r"\s*(?:(?:==|!=)\s*\d+(?:\.\d+)*(?:\.\*)?|(?:<=|>=|<|>)\s*\d+(?:\.\d+)*)\s*",
     re.ASCII,  # \d is Unicode-aware otherwise: "<٣" would pass
 )
+# The same clause split into its parts, for matching: operator, release, optional ".*".
+SPEC_PARTS_RE = re.compile(r"(==|!=|<=|>=|<|>)\s*(\d+(?:\.\d+)*)(\.\*)?", re.ASCII)
+RELEASE_RE = re.compile(r"\d+(?:\.\d+)*", re.ASCII)
 WHITESPACE_RE = re.compile(r"\s")
 
 
@@ -64,30 +70,59 @@ def problems(notes_dir: Path, coverage: dict) -> list[str]:
         if not path.is_file():
             out.append(f"{path.name}: not a file (only notes/<name>.toml belong here)")
             continue
-        out.extend(_file_problems(path, notes_dir, allowed))
+        out.extend(_read_file(path, notes_dir, allowed)[1])
     return out
 
 
-def _file_problems(path: Path, notes_dir: Path, allowed: set[str]) -> list[str]:
+def load(notes_dir: Path, coverage: dict, warn=None) -> dict[str, list[dict]]:
+    """The notes in notes_dir by normalized package name, from the files this checker accepts.
+
+    A file with any problem is left out whole, and each problem is passed to warn (a GitHub
+    Actions warning on stderr by default), so a bad note never reaches the site.
+    """
+    if warn is None:
+        def warn(message: str) -> None:
+            print(f"::warning::notes: {message}", file=sys.stderr)
+
+    if not notes_dir.is_dir():
+        return {}
+    allowed = platform_names(coverage)
+    if not allowed:
+        warn("coverage has no target platforms, so no notes are shown")
+        return {}
+    out: dict[str, list[dict]] = {}
+    for path in sorted(notes_dir.iterdir()):
+        if path.name == "README.md" or not path.is_file():
+            continue
+        notes, found = _read_file(path, notes_dir, allowed)
+        for problem in found:
+            warn(f"skipping {path.name}: {problem}")
+        if not found:
+            out[path.stem] = notes
+    return out
+
+
+def _read_file(path: Path, notes_dir: Path, allowed: set[str]) -> tuple[list[dict], list[str]]:
+    """The file's notes and its problems; the notes are only usable when there are no problems."""
     rel = (
         path.relative_to(notes_dir).as_posix()
         if path.is_relative_to(notes_dir)
         else path.name
     )
     if path.suffix != ".toml":
-        return [f"{rel}: not a .toml file"]
+        return [], [f"{rel}: not a .toml file"]
     stem = path.stem
     if not STEM_RE.fullmatch(stem):
         expected = normalize_name(stem)
         message = f"filename must be the normalized package name (got {stem!r}, expected {expected!r})"
-        return [f"{rel}: {message}"]
+        return [], [f"{rel}: {message}"]
 
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
     except UnicodeDecodeError:
-        return [f"{rel}: not valid UTF-8"]
+        return [], [f"{rel}: not valid UTF-8"]
     except (OSError, tomllib.TOMLDecodeError) as e:
-        return [f"{rel}: {e}"]
+        return [], [f"{rel}: {e}"]
 
     out: list[str] = []
     unknown = sorted(set(data) - {"note"})
@@ -97,7 +132,7 @@ def _file_problems(path: Path, notes_dir: Path, allowed: set[str]) -> list[str]:
     notes = data.get("note")
     if not isinstance(notes, list) or not notes:
         out.append(f"{rel}: needs at least one [[note]]")
-        return out
+        return [], out
 
     for i, note in enumerate(notes, start=1):
         prefix = f"{rel} note {i}"
@@ -105,7 +140,75 @@ def _file_problems(path: Path, notes_dir: Path, allowed: set[str]) -> list[str]:
             out.append(f"{prefix}: expected a table")
             continue
         out.extend(_note_problems(prefix, note, allowed))
+    return notes, out
+
+
+def _release(text: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in text.split("."))
+
+
+def _padded(release: tuple[int, ...], width: int) -> tuple[int, ...]:
+    return release + (0,) * (width - len(release))
+
+
+def version_matches(spec: str, version: object) -> bool:
+    """Whether a plain release such as "2.9.1" matches a versions value, as PEP 440 would say.
+
+    Only plain N(.N)* releases are matched. Anything else (a pre-, post- or dev release, a
+    local version, or no version) returns False, so a note limited to some versions is
+    hidden rather than shown for a release it may not apply to.
+    """
+    if not isinstance(version, str) or not RELEASE_RE.fullmatch(version):
+        return False
+    have = _release(version)
+    for clause in spec.split(","):
+        parts = SPEC_PARTS_RE.fullmatch(clause.strip())
+        if not parts:
+            return False
+        op, release, star = parts.groups()
+        want = _release(release)
+        if star:  # prefix match; the candidate is padded with zeros (PEP 440)
+            hit = _padded(have, len(want))[: len(want)] == want
+            ok = hit if op == "==" else not hit
+        else:
+            width = max(len(have), len(want))
+            a, b = _padded(have, width), _padded(want, width)
+            ok = {"==": a == b, "!=": a != b, "<=": a <= b, ">=": a >= b, "<": a < b, ">": a > b}[op]
+        if not ok:
+            return False
+    return True
+
+
+def current(notes: list[dict], package: dict, targets: list[dict]) -> list[dict]:
+    """The notes still worth showing for a package in this scan.
+
+    A note is stale, and left out, when its versions don't match the scanned version, or when
+    every target of every platform it lists (each Python, free-threaded included) has a wheel.
+    """
+    results = package.get("results") or []
+    every = {t.get("platform") for t in targets}
+    out = []
+    for note in notes:
+        if "versions" in note and not version_matches(note["versions"], package.get("version")):
+            continue
+        platforms = every if note["platforms"] == ["all"] else set(note["platforms"])
+        listed = [r for t, r in zip(targets, results) if t.get("platform") in platforms]
+        if listed and all(r == "wheel" for r in listed):
+            continue
+        out.append(note)
     return out
+
+
+def as_json(note: dict) -> dict:
+    """A note with the format's fields, for JSON: versions is null when absent, updated is YYYY-MM-DD."""
+    return {
+        "platforms": list(note["platforms"]),
+        "kind": note["kind"],
+        "text": note["text"],
+        "links": list(note["links"]),
+        "versions": note.get("versions"),
+        "updated": note["updated"].isoformat(),
+    }
 
 
 def valid_link(link: object) -> bool:
