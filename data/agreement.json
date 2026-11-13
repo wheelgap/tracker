@@ -1,0 +1,25 @@
+{
+ "schema": 1,
+ "date": "2026-11-13",
+ "scan": "2026-11-13T11:07:50+00:00",
+ "wheelgap": "0.9.0",
+ "pip": "26.3",
+ "top": 200,
+ "targets": [
+  "3.13 linux-x86_64",
+  "3.13 linux-aarch64",
+  "3.13 musl-aarch64",
+  "3.13 win-arm64"
+ ],
+ "packages": 200,
+ "checks": 800,
+ "matched": 800,
+ "mismatches": [],
+ "compiled": {
+  "packages": 36,
+  "checks": 144,
+  "matched": 144
+ },
+ "skipped": 0,
+ "errors": 0
+}
