@@ -4,8 +4,9 @@
 
 It comes from a job that ran third-party code (wheelgap and pip from PyPI), so it's committed and published only if
 it has exactly the shape check_pip.py writes: the expected keys and no others, integers where counts go, short
-strings, one entry per mismatch, at most 5% of pip's answers missing, and a size cap. Prints the problems and exits
-1 if there are any. Standard library only, so the commit job runs no third-party code.
+strings, real wheel/no-wheel disagreements on sampled targets, one entry per mismatch, at most 5% of pip's answers
+missing, and a size cap. Prints the problems and exits 1 if there are any. Standard library only, so the commit job
+runs no third-party code.
 """
 
 from __future__ import annotations
@@ -84,6 +85,10 @@ def problems(data: object) -> list[str]:
             ):
                 out.append(f"bad mismatch entry: {str(m)[:200]}")
                 break
+            if (m["wheelgap"] == "wheel") == (m["pip"] == "wheel"):
+                out.append("mismatch answers agree")
+            if isinstance(targets, list) and m["target"] not in targets:
+                out.append("mismatch target isn't in targets")
     return out
 
 
