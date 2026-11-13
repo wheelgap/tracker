@@ -47,6 +47,27 @@ class ProblemsTests(unittest.TestCase):
     def test_good(self):
         self.assertEqual(check_agreement.problems(GOOD), [])
 
+    def test_matching_answers_are_not_mismatches(self):
+        for status in ("wheel", "source", "missing", "n/a", "bundled"):
+            pip = "wheel" if status == "wheel" else "no wheel"
+            mismatch = GOOD["mismatches"][0] | {
+                "wheelgap": status,
+                "pip": pip,
+                "file": GOOD["mismatches"][0]["file"] if pip == "wheel" else None,
+            }
+            with self.subTest(status=status):
+                self.assertTrue(check_agreement.problems(changed(mismatches=[mismatch])))
+
+    def test_mismatch_target_must_be_in_targets(self):
+        mismatch = GOOD["mismatches"][0] | {"target": "3.13 linux-aarch64"}
+        self.assertTrue(check_agreement.problems(changed(mismatches=[mismatch])))
+
+    def test_disagreement_in_either_direction_is_valid(self):
+        for status, pip, file in (("source", "wheel", "disputed.whl"), ("wheel", "no wheel", None)):
+            with self.subTest(status=status, pip=pip):
+                mismatch = GOOD["mismatches"][0] | {"wheelgap": status, "pip": pip, "file": file}
+                self.assertEqual(check_agreement.problems(changed(mismatches=[mismatch])), [])
+
     def test_bad(self):
         mismatch = GOOD["mismatches"][0]
         cases = {
