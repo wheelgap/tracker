@@ -41,8 +41,9 @@ def scan(packages):
 
 
 def note(platforms='["musl-aarch64"]', kind="alternative", text="Use `pkg-binary` instead.", versions=None,
-         links='["https://example.com/docs?a=1&b=2"]'):
+         links='["https://example.com/docs?a=1&b=2"]', python=None):
     extra = f'versions = "{versions}"\n' if versions else ""
+    extra += f"python = {python}\n" if python else ""
     return (
         "[[note]]\n"
         f"platforms = {platforms}\n"
@@ -130,6 +131,16 @@ class LoadTests(Temp):
         self.assertEqual(len(warnings), 1)
         self.assertIn("nested: not a file", warnings[0])
 
+    def test_a_note_for_a_python_the_scan_lacks_is_left_out_with_a_warning(self):
+        self.write_note("good", note(python='["3.13"]'))
+        self.write_note("bad", note(python='["3.12"]'))
+        warnings = []
+        loaded = check_notes.load(self.notes, scan([]), warn=warnings.append)
+        self.assertEqual(list(loaded), ["good"])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("bad.toml", warnings[0])
+        self.assertIn("unknown python '3.12'", warnings[0])
+
     def test_missing_directory_has_no_notes(self):
         self.assertEqual(check_notes.load(self.root / "nowhere", scan([])), {})
 
@@ -151,6 +162,35 @@ class LookupNotesTests(Temp):
             "versions": "<3",
             "updated": "2026-11-11",
         }])
+
+    def test_python_list_is_listed_only_on_a_note_that_has_one(self):
+        # wheelgap rejects a note whose keys aren't exactly the ones it knows, so a note without python
+        # must keep exactly the keys it had before the field existed.
+        self.write_note("scoped", note(python='["3.13", "3.14t"]'))
+        self.write_note("plain", note())
+        files = self.build([
+            package("scoped", ["wheel", "source", "wheel", "missing"]),
+            package("plain", ["wheel", "source", "wheel", "missing"], rank=2),
+        ])
+        self.assertEqual(files["scoped"]["notes"][0]["python"], ["3.13", "3.14t"])
+        self.assertEqual(
+            set(files["plain"]["notes"][0]), {"platforms", "kind", "text", "links", "versions", "updated"}
+        )
+
+    def test_note_retires_per_python(self):
+        # 3.14t musl-aarch64 has a wheel; 3.13 musl-aarch64 still builds from source.
+        results = ["wheel", "source", "wheel", "missing"]
+        self.write_note("free-threaded", note(python='["3.14t"]'))
+        self.write_note("any-python", note())
+        self.write_note("gap-python", note(python='["3.13"]'))
+        files = self.build([
+            package("free-threaded", results),
+            package("any-python", results, rank=2),
+            package("gap-python", results, rank=3),
+        ])
+        self.assertEqual(files["free-threaded"]["notes"], [])  # its only Python has the wheel
+        self.assertEqual(len(files["any-python"]["notes"]), 1)  # 3.13 still lacks one, as before
+        self.assertEqual(len(files["gap-python"]["notes"]), 1)  # the Python it is about still lacks one
 
     def test_note_for_another_version_is_left_out(self):
         self.write_note("pkg", note(versions="<3"))
@@ -215,6 +255,16 @@ class PageNotesTests(Temp):
         self.write_note("pkg", note(versions=">=2.8, <2.10"))
         page = self.build([package("pkg", ["wheel", "source", "wheel", "missing"])])["pkg"]
         self.assertIn("· for versions &gt;=2.8, &lt;2.10 ·", page)
+
+    def test_python_list_is_shown_and_omitted_when_absent(self):
+        self.write_note("scoped", note(python='["3.13", "3.14t"]'))
+        self.write_note("plain", note())
+        pages = self.build([
+            package("scoped", ["wheel", "source", "wheel", "missing"]),
+            package("plain", ["wheel", "source", "wheel", "missing"], rank=2),
+        ])
+        self.assertIn("Alpine ARM64 · for Python 3.13, 3.14t · checked 2026-11-11", pages["scoped"])
+        self.assertNotIn("for Python", pages["plain"])
 
     def test_link_text_drops_the_scheme_whatever_its_case(self):
         self.write_note("pkg", note(links='["HTTPS://Example.com/docs"]'))
