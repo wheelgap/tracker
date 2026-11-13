@@ -103,10 +103,11 @@ class CampaignTests(unittest.TestCase):
             return ""
         return page.split(">Has an alternative</h2>", 1)[1].split(">Done</h2>", 1)[0]
 
-    def page_with_note(self, kind, platforms='["musl-aarch64"]', versions=None) -> str:
+    def page_with_note(self, kind, platforms='["musl-aarch64"]', versions=None, python=None) -> str:
         notes = self.root / "notes"
         notes.mkdir(exist_ok=True)
         extra = f'versions = "{versions}"\n' if versions else ""
+        extra += f"python = {python}\n" if python else ""
         (notes / "psycopg2.toml").write_text(
             "[[note]]\n"
             f"platforms = {platforms}\n"
@@ -162,6 +163,31 @@ class CampaignTests(unittest.TestCase):
         page = self.page_with_note("alternative", platforms='["all"]')
         self.assertNotIn("psycopg2", self.todo(page))
         self.assertIn("psycopg2", self.set_aside(page))
+
+    def test_alternative_note_for_the_campaigns_python_moves_the_row(self):
+        # The campaign is on Python 3.15 (the newest non-free-threaded one in the scan).
+        page = self.page_with_note("alternative", python='["3.15"]')
+        self.assertNotIn("psycopg2", self.todo(page))
+        self.assertIn("psycopg2", self.set_aside(page))
+
+    def test_alternative_note_for_another_python_leaves_the_row_in_to_do(self):
+        # A note limited to 3.14t is about a free-threaded campaign, not this 3.15 one: it neither sets
+        # psycopg2 aside nor shows up as a marker here.
+        for python in ('["3.14t"]', '["3.13"]', '["3.13", "3.14t"]'):
+            with self.subTest(python=python):
+                page = self.page_with_note("alternative", python=python)
+                self.assertIn("psycopg2", self.todo(page))
+                self.assertNotIn("has a note", page)
+                self.assertNotIn("Has an alternative", page)
+
+    def test_informational_note_for_another_python_has_no_marker(self):
+        page = self.page_with_note("workaround", python='["3.14t"]')
+        self.assertIn("psycopg2", self.todo(page))
+        self.assertNotIn("has a note", page)
+
+    def test_informational_note_for_the_campaigns_python_keeps_the_marker(self):
+        page = self.page_with_note("workaround", python='["3.15"]')
+        self.assertIn('notes/psycopg2.toml">has a note</a>', self.todo(page))
 
     def test_informational_note_keeps_the_row_with_the_marker(self):
         for kind in ("workaround", "upstream-issue", "other-source"):

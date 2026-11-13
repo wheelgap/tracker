@@ -21,7 +21,7 @@ build reads them from data/campaigns next to coverage.json (or the directory
 given as a sixth argument).
 
 To-do rows are checked against the repository's notes/*.toml, read through
-check_notes.py. A package with a current note for the campaign's platform gets a
+check_notes.py. A package with a current note for the campaign's platform and Python gets a
 "has a note" link, and one whose note is an alternative (kind "alternative")
 moves out of To do into its own list.
 """
@@ -252,11 +252,18 @@ def todo_list(packages: list[dict], index: int, indexes: list[int]) -> list[dict
     return rows
 
 
-def platform_notes(notes: list[dict], package: dict, targets: list[dict], platform: str) -> list[dict]:
-    """The package's current notes (check_notes.current) that cover the campaign's platform."""
+def platform_notes(
+    notes: list[dict], package: dict, targets: list[dict], platform: str, python: str | None = None
+) -> list[dict]:
+    """The package's current notes (check_notes.current) that cover the campaign's platform and Python.
+
+    A note with a `python` list only covers a campaign whose Python is listed; a note without one
+    covers every Python. With python=None, a note that has a `python` list is not covered.
+    """
     return [
         note for note in check_notes.current(notes, package, targets)
-        if note["platforms"] == ["all"] or platform in note["platforms"]
+        if (note["platforms"] == ["all"] or platform in note["platforms"])
+        and check_notes.covers_python(note, python)
     ]
 
 
@@ -563,7 +570,9 @@ def page(
     set_aside = []
     for item in todo:
         package = next(p for p in packages if p["name"] == item["name"])
-        found = platform_notes((notes or {}).get(item["canonical"], []), package, scan["targets"], platform)
+        found = platform_notes(
+            (notes or {}).get(item["canonical"], []), package, scan["targets"], platform, python
+        )
         if found:
             item["note"] = f"{NOTES_URL}{item['canonical']}.toml"
         if any(note["kind"] in SET_ASIDE_KINDS for note in found):

@@ -12,6 +12,12 @@ LABELS = [
     {"label": "3.13 linux-x86_64", "platform": "linux-x86_64"},
     {"label": "3.13 musl-aarch64", "platform": "musl-aarch64"},
 ]
+# Targets with a Python each, as data/coverage.json has them.
+PYTHON_TARGETS = [
+    {"label": "3.13 musl-aarch64", "python": "3.13", "platform": "musl-aarch64"},
+    {"label": "3.14t musl-aarch64", "python": "3.14t", "platform": "musl-aarch64"},
+    {"label": "3.13 pyodide", "python": "3.13", "platform": "pyodide"},
+]
 
 
 def coverage(targets=None):
@@ -25,8 +31,10 @@ def note_toml(
     links='["https://example.com/docs"]',
     versions=None,
     updated="2026-11-11",
+    python=None,
 ):
     extra = f'versions = "{versions}"\n' if versions is not None else ""
+    extra += f"python = {python}\n" if python is not None else ""
     return (
         f"[[note]]\n"
         f"platforms = {platforms}\n"
@@ -254,6 +262,52 @@ class CheckNotesTests(unittest.TestCase):
             found,
         )
 
+    def test_python_list_of_scanned_pythons_is_accepted(self):
+        self.write("psycopg2.toml", note_toml(python='["3.13", "3.14t"]'))
+        self.assertEqual(self.problems(coverage(PYTHON_TARGETS)), [])
+
+    def test_unknown_python_is_reported(self):
+        self.write("psycopg2.toml", note_toml(python='["3.12"]'))
+        found = self.problems(coverage(PYTHON_TARGETS))
+        self.assertTrue(any("unknown python '3.12'" in p for p in found), found)
+
+    def test_python_without_the_t_suffix_is_not_the_free_threaded_label(self):
+        # The scan has 3.14t but no 3.14.
+        self.write("psycopg2.toml", note_toml(python='["3.14"]'))
+        found = self.problems(coverage(PYTHON_TARGETS))
+        self.assertTrue(any("unknown python '3.14'" in p for p in found), found)
+
+    def test_python_is_unknown_when_the_scan_has_no_pythons(self):
+        self.write("psycopg2.toml", note_toml(python='["3.13"]'))
+        found = self.problems()  # LABELS carry no python
+        self.assertTrue(any("unknown python '3.13'" in p for p in found), found)
+
+    def test_empty_python_list_is_reported(self):
+        self.write("psycopg2.toml", note_toml(python="[]"))
+        found = self.problems(coverage(PYTHON_TARGETS))
+        self.assertTrue(any("python must be a non-empty list" in p for p in found), found)
+
+    def test_python_must_be_a_list(self):
+        for value in ('"3.13"', "3.13", "true"):
+            with self.subTest(value=value):
+                self.write("psycopg2.toml", note_toml(python=value))
+                found = self.problems(coverage(PYTHON_TARGETS))
+                self.assertTrue(any("python must be a non-empty list" in p for p in found), found)
+
+    def test_python_entries_must_be_strings(self):
+        self.write("psycopg2.toml", note_toml(python="[3.13]"))
+        found = self.problems(coverage(PYTHON_TARGETS))
+        self.assertTrue(any("unknown python" in p for p in found), found)
+
+    def test_duplicate_python_is_reported(self):
+        self.write("psycopg2.toml", note_toml(python='["3.13", "3.13"]'))
+        found = self.problems(coverage(PYTHON_TARGETS))
+        self.assertTrue(any("duplicate python: 3.13" in p for p in found), found)
+
+    def test_note_without_python_still_passes_when_the_scan_has_no_pythons(self):
+        self.write("psycopg2.toml", note_toml())
+        self.assertEqual(self.problems(), [])
+
     def test_duplicate_platforms_are_reported(self):
         self.write(
             "psycopg2.toml", note_toml(platforms='["musl-aarch64", "musl-aarch64"]')
@@ -353,6 +407,64 @@ class CheckNotesTests(unittest.TestCase):
 
 
 # Keep a cheap check that the date type the checker wants is what tomllib emits.
+class PythonScopedNoteTests(unittest.TestCase):
+    """A note's optional `python` list limits which Pythons it applies to and retires on."""
+
+    def note(self, **extra):
+        return {
+            "platforms": ["musl-aarch64"], "kind": "workaround", "text": "t",
+            "links": ["https://e.x"], **extra,
+        }
+
+    def package(self, *results):
+        # One result per PYTHON_TARGETS entry: 3.13 musl, 3.14t musl, 3.13 pyodide.
+        return {"name": "pkg", "version": "1.0", "results": list(results)}
+
+    def test_note_without_python_covers_every_python(self):
+        for python in ("3.13", "3.14t", None):
+            self.assertTrue(check_notes.covers_python(self.note(), python), python)
+
+    def test_note_with_python_covers_only_the_listed_ones(self):
+        n = self.note(python=["3.13"])
+        self.assertTrue(check_notes.covers_python(n, "3.13"))
+        self.assertFalse(check_notes.covers_python(n, "3.14t"))
+        self.assertFalse(check_notes.covers_python(n, "3.14"))  # "3.14t" is a different label
+        self.assertFalse(check_notes.covers_python(n, None))
+
+    def test_note_without_python_stays_while_a_free_threaded_wheel_is_missing(self):
+        # The existing behaviour: only 3.14t is left, and the note still shows.
+        n = self.note()
+        pkg = self.package("wheel", "missing", "missing")
+        self.assertEqual(check_notes.current([n], pkg, PYTHON_TARGETS), [n])
+
+    def test_note_with_python_retires_once_its_pythons_have_wheels(self):
+        n = self.note(python=["3.13"])
+        pkg = self.package("wheel", "missing", "missing")  # 3.13 musl has a wheel; only 3.14t lacks one
+        self.assertEqual(check_notes.current([n], pkg, PYTHON_TARGETS), [])
+
+    def test_note_with_python_stays_while_a_listed_python_lacks_a_wheel(self):
+        n = self.note(python=["3.13", "3.14t"])
+        pkg = self.package("wheel", "source", "missing")
+        self.assertEqual(check_notes.current([n], pkg, PYTHON_TARGETS), [n])
+
+    def test_note_for_the_free_threaded_python_ignores_a_3_13_gap(self):
+        n = self.note(python=["3.14t"])
+        pkg = self.package("source", "wheel", "missing")  # 3.13 musl lacks a wheel, 3.14t has one
+        self.assertEqual(check_notes.current([n], pkg, PYTHON_TARGETS), [])
+
+    def test_python_list_applies_to_every_platform_of_an_all_note(self):
+        n = self.note(platforms=["all"], python=["3.13"])
+        # 3.13 musl and 3.13 pyodide: pyodide still lacks a wheel, so the note stays.
+        self.assertEqual(check_notes.current([n], self.package("wheel", "missing", "missing"), PYTHON_TARGETS), [n])
+        self.assertEqual(check_notes.current([n], self.package("wheel", "missing", "bundled"), PYTHON_TARGETS), [])
+
+    def test_note_with_python_the_scan_lacks_is_kept(self):
+        # No target has this Python, so there's nothing to judge the note by (as for a missing platform).
+        n = self.note(python=["3.12"])
+        pkg = self.package("wheel", "wheel", "wheel")
+        self.assertEqual(check_notes.current([n], pkg, PYTHON_TARGETS), [n])
+
+
 class TomlDateTests(unittest.TestCase):
     def test_bare_toml_date_is_datetime_date(self):
         import tomllib

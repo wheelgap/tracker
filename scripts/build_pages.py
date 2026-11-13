@@ -158,6 +158,8 @@ def notes_html(notes: list[dict], name: str, gaps: list[str], today: str, exists
         meta = [KIND_TEXT.get(note["kind"], note["kind"]), where]
         if "versions" in note:
             meta.append(f"for versions {note['versions']}")
+        if "python" in note:
+            meta.append(f"for Python {', '.join(note['python'])}")
         meta.append(f"checked {note['updated'].isoformat()}")
         links = " · ".join(f'<a href="{e(u)}">{e(SCHEME_RE.sub("", u))}</a>' for u in note["links"])
         cards.append(
