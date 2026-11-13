@@ -61,21 +61,21 @@ function renderMeta() {
 // data/agreement.json, from scripts/check_pip.py: how often pip agrees with the scan. Built only with textContent,
 // so nothing in the file is read as HTML, and shown only while it's fresh and well-formed.
 const AGREEMENT_MAX_AGE_DAYS = 3;
-const isCount = (n) => Number.isInteger(n) && n >= 0;
+const isWholeCount = (n) => Number.isInteger(n) && n >= 0;
 // Round down, so a single mismatch never shows as 100%.
 const rateText = (matched, checks) => (matched === checks ? "100" : (Math.floor((1000 * matched) / checks) / 10).toFixed(1));
 
 function agreementText(a, now = Date.now()) {
   if (!a || typeof a !== "object") return null;
   const { checks, matched, compiled, skipped, errors } = a;
-  if (![checks, matched, skipped, errors].every(isCount) || checks === 0 || matched > checks) return null;
+  if (![checks, matched, skipped, errors].every(isWholeCount) || checks === 0 || matched > checks) return null;
   if (typeof a.date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(a.date)) return null;
   const age = (now - Date.parse(`${a.date}T00:00:00Z`)) / 86400000;
   if (!(age >= -1 && age <= AGREEMENT_MAX_AGE_DAYS)) return null; // a stale check says nothing about today's scan
   let text =
     `Cross-checked against pip on ${a.date}, with wheelgap's own tag lists on both sides: ` +
     `they agree on ${rateText(matched, checks)}% of ${fmt(checks)} checks`;
-  if (compiled && typeof compiled === "object" && [compiled.packages, compiled.checks, compiled.matched].every(isCount) &&
+  if (compiled && typeof compiled === "object" && [compiled.packages, compiled.checks, compiled.matched].every(isWholeCount) &&
       compiled.checks > 0 && compiled.matched <= compiled.checks) {
     text +=
       `, and on ${rateText(compiled.matched, compiled.checks)}% of the ${fmt(compiled.checks)} for the ` +
