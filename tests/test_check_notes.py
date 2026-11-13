@@ -241,6 +241,23 @@ class CheckNotesTests(unittest.TestCase):
         found = self.problems()
         self.assertTrue(any("single line" in p for p in found), found)
 
+    def test_text_with_control_or_format_characters_is_reported(self):
+        # TOML escapes, so the file holds the real characters: a bidi override, tab, ESC, zero-width space.
+        for text, code in (
+            ("run \\u202egnp.exe", "U+202E"),
+            ("pip\\tinstall", "U+0009"),
+            ("\\u001b[31mred", "U+001B"),
+            ("zero\\u200bwidth", "U+200B"),
+        ):
+            with self.subTest(text=text):
+                self.write("psycopg2.toml", note_toml(text=text))
+                found = self.problems()
+                self.assertTrue(any(code in p for p in found), found)
+
+    def test_text_with_plain_non_ascii_is_accepted(self):
+        self.write("psycopg2.toml", note_toml(text="café — naïve"))
+        self.assertEqual(self.problems(), [])
+
     def test_empty_platforms_are_reported(self):
         self.write("psycopg2.toml", note_toml(platforms="[]"))
         found = self.problems()
