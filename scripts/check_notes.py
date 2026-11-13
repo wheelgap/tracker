@@ -351,6 +351,8 @@ def _note_problems(
             out.append(f"{prefix}: text must be a non-empty string")
         elif "\n" in text or "\r" in text:
             out.append(f"{prefix}: text must be a single line")
+        elif bad := [c for c in text if unicodedata.category(c) in ("Cc", "Cf")]:
+            out.append(f"{prefix}: text contains U+{ord(bad[0]):04X}")
         elif len(text) >= MAX_TEXT:
             out.append(
                 f"{prefix}: text is {len(text)} characters, must be under {MAX_TEXT}"
