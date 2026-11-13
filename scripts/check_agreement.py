@@ -85,10 +85,11 @@ def problems(data: object) -> list[str]:
             ):
                 out.append(f"bad mismatch entry: {str(m)[:200]}")
                 break
+            entry = f"{m['name']} {m['version']} on {m['target']}"
             if (m["wheelgap"] == "wheel") == (m["pip"] == "wheel"):
-                out.append("mismatch answers agree")
+                out.append(f"mismatch answers agree: {entry} ({m['wheelgap']} vs {m['pip']})")
             if isinstance(targets, list) and m["target"] not in targets:
-                out.append("mismatch target isn't in targets")
+                out.append(f"mismatch target isn't in targets: {entry}")
     return out
 
 
