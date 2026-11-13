@@ -30,4 +30,4 @@ jobs:
         run: node --check site/logic.js && node --check site/app.js
       - name: Site logic
         # The runner's own node; node:test needs nothing installed.
-        run: node --test tests/site/logic.test.js
+        run: node --test tests/site/logic.test.js tests/site/scripts.test.js
