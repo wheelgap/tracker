@@ -304,6 +304,22 @@ class CheckNotesTests(unittest.TestCase):
         found = self.problems(coverage(PYTHON_TARGETS))
         self.assertTrue(any("duplicate python: 3.13" in p for p in found), found)
 
+    def test_python_no_listed_platform_has_is_reported(self):
+        # 3.14t is scanned, but not on pyodide, so the note could never retire.
+        self.write("psycopg2.toml", note_toml(platforms='["pyodide"]', python='["3.14t"]'))
+        found = self.problems(coverage(PYTHON_TARGETS))
+        self.assertTrue(
+            any("the scan has no target for platforms pyodide on python 3.14t" in p for p in found), found
+        )
+        notes = check_notes.load(self.notes, coverage(PYTHON_TARGETS), warn=lambda message: None)
+        self.assertEqual(notes, {})
+
+    def test_python_one_listed_platform_has_is_accepted(self):
+        for platforms in ('["pyodide", "musl-aarch64"]', '["all"]'):
+            with self.subTest(platforms=platforms):
+                self.write("psycopg2.toml", note_toml(platforms=platforms, python='["3.14t"]'))
+                self.assertEqual(self.problems(coverage(PYTHON_TARGETS)), [])
+
     def test_note_without_python_still_passes_when_the_scan_has_no_pythons(self):
         self.write("psycopg2.toml", note_toml())
         self.assertEqual(self.problems(), [])
@@ -459,7 +475,8 @@ class PythonScopedNoteTests(unittest.TestCase):
         self.assertEqual(check_notes.current([n], self.package("wheel", "missing", "bundled"), PYTHON_TARGETS), [])
 
     def test_note_with_python_the_scan_lacks_is_kept(self):
-        # No target has this Python, so there's nothing to judge the note by (as for a missing platform).
+        # No target has this Python, so there's nothing to judge the note by (as for a missing platform). The
+        # checker refuses such a note (test_python_no_listed_platform_has_is_reported); this is only a fallback.
         n = self.note(python=["3.12"])
         pkg = self.package("wheel", "wheel", "wheel")
         self.assertEqual(check_notes.current([n], pkg, PYTHON_TARGETS), [n])

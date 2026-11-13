@@ -64,11 +64,21 @@ def python_labels(coverage: dict) -> set[str]:
     return {t["python"] for t in coverage.get("targets", []) if t.get("python")}
 
 
+def scanned_pairs(coverage: dict) -> set[tuple[str, str]]:
+    """The (platform, Python label) pairs the scan has a target for: pyodide has fewer Pythons than the rest."""
+    return {
+        (t["platform"], t["python"])
+        for t in coverage.get("targets", [])
+        if t.get("platform") and t.get("python")
+    }
+
+
 def problems(notes_dir: Path, coverage: dict) -> list[str]:
     allowed = platform_names(coverage)
     if not allowed:
         return ["coverage has no target platforms"]
     pythons = python_labels(coverage)
+    pairs = scanned_pairs(coverage)
 
     out: list[str] = []
     for path in sorted(notes_dir.iterdir()):
@@ -77,7 +87,7 @@ def problems(notes_dir: Path, coverage: dict) -> list[str]:
         if not path.is_file():
             out.append(f"{path.name}: not a file (only notes/<name>.toml belong here)")
             continue
-        out.extend(_read_file(path, notes_dir, allowed, pythons)[1])
+        out.extend(_read_file(path, notes_dir, allowed, pythons, pairs)[1])
     return out
 
 
@@ -98,6 +108,7 @@ def load(notes_dir: Path, coverage: dict, warn=None) -> dict[str, list[dict]]:
         warn("coverage has no target platforms, so no notes are shown")
         return {}
     pythons = python_labels(coverage)
+    pairs = scanned_pairs(coverage)
     out: dict[str, list[dict]] = {}
     for path in sorted(notes_dir.iterdir()):
         if path.name == "README.md":
@@ -105,7 +116,7 @@ def load(notes_dir: Path, coverage: dict, warn=None) -> dict[str, list[dict]]:
         if not path.is_file():
             warn(f"skipping {path.name}: not a file (only notes/<name>.toml belong here)")
             continue
-        notes, found = _read_file(path, notes_dir, allowed, pythons)
+        notes, found = _read_file(path, notes_dir, allowed, pythons, pairs)
         for problem in found:
             warn(f"skipping {path.name}: {problem}")
         if not found:
@@ -114,7 +125,11 @@ def load(notes_dir: Path, coverage: dict, warn=None) -> dict[str, list[dict]]:
 
 
 def _read_file(
-    path: Path, notes_dir: Path, allowed: set[str], pythons: set[str] = frozenset()
+    path: Path,
+    notes_dir: Path,
+    allowed: set[str],
+    pythons: set[str] = frozenset(),
+    pairs: set[tuple[str, str]] | None = None,
 ) -> tuple[list[dict], list[str]]:
     """The file's notes and its problems; the notes are only usable when there are no problems."""
     rel = (
@@ -152,7 +167,7 @@ def _read_file(
         if not isinstance(note, dict):
             out.append(f"{prefix}: expected a table")
             continue
-        out.extend(_note_problems(prefix, note, allowed, pythons))
+        out.extend(_note_problems(prefix, note, allowed, pythons, pairs))
     return notes, out
 
 
@@ -277,7 +292,11 @@ def _duplicates(items: list) -> list:
 
 
 def _note_problems(
-    prefix: str, note: dict, allowed: set[str], pythons: set[str] = frozenset()
+    prefix: str,
+    note: dict,
+    allowed: set[str],
+    pythons: set[str] = frozenset(),
+    pairs: set[tuple[str, str]] | None = None,
 ) -> list[str]:
     out: list[str] = []
     unknown = sorted(set(note) - NOTE_KEYS)
@@ -288,6 +307,7 @@ def _note_problems(
         out.append(f"{prefix}: missing required keys: {', '.join(missing)}")
 
     if "platforms" in note:
+        before = len(out)
         platforms = note["platforms"]
         if not isinstance(platforms, list) or not platforms:
             out.append(f"{prefix}: platforms must be a non-empty list")
@@ -299,8 +319,12 @@ def _note_problems(
                 out.append(f"{prefix}: unknown platform {bad[0]!r}")
             elif dupes := _duplicates(platforms):
                 out.append(f"{prefix}: duplicate platforms: {', '.join(dupes)}")
+        scope_ok = len(out) == before  # valid platforms, so python's overlap with them can be checked below
+    else:
+        scope_ok = False
 
     if "python" in note:
+        before = len(out)
         listed = note["python"]
         if not isinstance(listed, list) or not listed:
             out.append(f"{prefix}: python must be a non-empty list")
@@ -308,6 +332,15 @@ def _note_problems(
             out.append(f"{prefix}: unknown python {bad[0]!r}")
         elif dupes := _duplicates(listed):
             out.append(f"{prefix}: duplicate python: {', '.join(dupes)}")
+        # Every label is scanned somewhere, but a note must also have a target to retire by: pyodide, say,
+        # has no free-threaded Python, so platforms = ["pyodide"] with python = ["3.14t"] would never retire.
+        if scope_ok and pairs is not None and len(out) == before:
+            platforms = allowed if note["platforms"] == ["all"] else set(note["platforms"])
+            if not any((p, py) in pairs for p in platforms for py in listed):
+                out.append(
+                    f"{prefix}: the scan has no target for platforms {', '.join(note['platforms'])} "
+                    f"on python {', '.join(listed)}"
+                )
 
     if "kind" in note and note["kind"] not in KINDS:
         out.append(f"{prefix}: kind must be one of {', '.join(KINDS)}")
