@@ -35,6 +35,8 @@ jobs:
           jobs = []
           for i, r in enumerate(sorted(clean, key=lambda r: (r["name"], r["target"]))):
               spec = build_lab.TARGETS[r["target"]]
+              if "win" not in r["target"]:
+                  continue  # spike v3: Linux and Alpine builds already come out identical
               for attempt in (1, 2):
                   job = {"id": f"{i}", "attempt": attempt, "name": r["name"], "version": r["version"],
                          "target": r["target"], "runner": spec["runner"], "python": spec["python"]}
@@ -68,6 +70,8 @@ jobs:
           SOURCE_DATE_EPOCH: "1700000000"
           PIP_DISABLE_PIP_VERSION_CHECK: "1"
         run: |
+          # Microsoft's compiler and linker stamp a time and a random debug ID into every .pyd unless told not to.
+          if [ "$RUNNER_OS" = Windows ]; then export CL=/Brepro LINK=/Brepro RUSTFLAGS="-C link-arg=/Brepro"; fi
           # Build from a fixed folder, not pip's random temp one, so paths baked into binaries match between builds.
           python -m pip download --no-deps --no-binary :all: --no-cache-dir -d sdist "$NAME==$VERSION" > build.log 2>&1 || true
           python - <<'EOF' >> build.log 2>&1 || true
