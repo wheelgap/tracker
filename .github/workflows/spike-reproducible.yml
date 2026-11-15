@@ -84,6 +84,7 @@ jobs:
           # Only for the build itself: build tools come as wheels, as pip installs them.
           if [ "$RUNNER_OS" = Windows ]; then export CL=/Brepro LINK=/Brepro RUSTFLAGS="-C link-arg=/Brepro"; fi
           python -m pip wheel --no-deps --no-cache-dir -w out "$src" >> build.log 2>&1 || true
+          ls out >/dev/null 2>&1 && ls out/*.whl >/dev/null 2>&1 || { echo "::group::build log (no wheel)"; tail -60 build.log; echo "::endgroup::"; }
           python - <<'EOF' > hash.json
           import hashlib, json, os, pathlib
           wheels = sorted(pathlib.Path("out").glob("*.whl"))
