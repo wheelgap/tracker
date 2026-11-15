@@ -1,0 +1,70 @@
+name: Build spike (not for merging)
+
+# Feasibility spike: do the most-needed missing wheels build from source on the runners people lack them for?
+# Records pass/fail, time and the error, and installs and imports the result. Nothing is published.
+
+on:
+  pull_request:
+    paths: [".github/workflows/build-spike.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.pkg }} on ${{ matrix.os }} py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { pkg: "tiktoken==0.14.0", mod: tiktoken, os: windows-11-arm, python: "3.14" }
+          - { pkg: "cryptography==50.0.2", mod: cryptography, os: windows-11-arm, python: "3.14" }
+          - { pkg: "pyarrow==26.0.1", mod: pyarrow, os: windows-11-arm, python: "3.14" }
+          - { pkg: "fastuuid==0.14.0", mod: fastuuid, os: windows-11-arm, python: "3.14" }
+          - { pkg: "orjson==3.13.0", mod: orjson, os: ubuntu-24.04, python: "3.14t" }
+          - { pkg: "fastuuid==0.14.0", mod: fastuuid, os: ubuntu-24.04, python: "3.14t" }
+          - { pkg: "grpcio==1.85.1", mod: grpc, os: ubuntu-24.04, python: "3.14t" }
+          - { pkg: "rpds-py==2026.9.1", mod: rpds, os: windows-11-arm, python: "3.14t" }
+          - { pkg: "safetensors", mod: safetensors, os: ubuntu-24.04, python: "3.14t" }
+          - { pkg: "zstandard", mod: zstandard, os: ubuntu-24.04, python: "3.14t" }
+    steps:
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Toolchain
+        shell: bash
+        run: |
+          python -VV
+          python -c "import sysconfig; print('free-threaded:', bool(sysconfig.get_config_var('Py_GIL_DISABLED')))"
+          (rustc --version && cargo --version) || echo "no Rust on this runner"
+      - name: Build from the PyPI sdist only
+        id: build
+        shell: bash
+        run: |
+          python -m pip install -q --upgrade pip
+          start=$(date +%s)
+          set +e
+          python -m pip wheel --no-deps --no-binary :all: --no-cache-dir -w out "${{ matrix.pkg }}" > build.log 2>&1
+          code=$?
+          set -e
+          secs=$(( $(date +%s) - start ))
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "secs=$secs" >> "$GITHUB_OUTPUT"
+          tail -40 build.log
+          ls out || true
+      - name: Install and import
+        id: import
+        if: steps.build.outputs.code == '0'
+        shell: bash
+        run: |
+          python -m pip install -q --no-index --find-links out --no-deps out/*.whl
+          python -m pip install -q "${{ matrix.pkg }}" || true  # its dependencies, from PyPI
+          python -W error::RuntimeWarning -c "import sys, ${{ matrix.mod }}; gil = getattr(sys, '_is_gil_enabled', lambda: True)(); print('imported; GIL enabled after import:', gil)"
+      - name: Record
+        if: always()
+        shell: bash
+        run: |
+          echo "| ${{ matrix.pkg }} | ${{ matrix.os }} | ${{ matrix.python }} | build exit ${{ steps.build.outputs.code }} | ${{ steps.build.outputs.secs }}s | import ${{ steps.import.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
+          grep -iE "error|cannot find|not found|required|failed" build.log | grep -viE "warning|0 errors" | head -8 >> "$GITHUB_STEP_SUMMARY" || true
