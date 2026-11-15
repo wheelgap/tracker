@@ -83,7 +83,7 @@ jobs:
           src=$(python -c "import pathlib,os; d=pathlib.Path('C:/b' if os.name=='nt' else '/tmp/b'); print(next(d.iterdir()))")
           # Only for the build itself: build tools come as wheels, as pip installs them.
           # Spelt -Brepro: Git Bash rewrites a leading / into a Windows path (/Brepro became C:/Program Files/Git/Brepro).
-          if [ "$RUNNER_OS" = Windows ]; then export CL=-Brepro LINK=-Brepro RUSTFLAGS="-C link-arg=-Brepro"; fi
+          if [ "$RUNNER_OS" = Windows ]; then export CL=-Brepro LINK=-Brepro RUSTFLAGS="-C link-arg=-Brepro -C codegen-units=1"; fi
           python -m pip wheel --no-deps --no-cache-dir -w out "$src" >> build.log 2>&1 || true
           ls out >/dev/null 2>&1 && ls out/*.whl >/dev/null 2>&1 || { echo "::group::build log (no wheel)"; tail -60 build.log; echo "::endgroup::"; }
           python - <<'EOF' > hash.json
@@ -99,10 +99,33 @@ jobs:
                             "members": members}))
           EOF
           cat hash.json
+      - name: Install it from a local index, compiling nothing
+        if: matrix.attempt == 1
+        shell: bash
+        env:
+          NAME: ${{ matrix.name }}
+        run: |
+          # The wheel never leaves this runner: a folder index next to PyPI, in a fresh venv.
+          python -m venv fresh
+          py=fresh/bin/python; [ -x "$py" ] || py=fresh/Scripts/python.exe
+          ok=false
+          if ls out/*.whl >/dev/null 2>&1 && "$py" -m pip install --quiet --only-binary :all: --find-links out "$NAME" \
+              > install.log 2>&1; then
+            ok=true
+          fi
+          tail -5 install.log || true
+          python - "$ok" <<'EOF' > install.json
+          import json, os, sys
+          print(json.dumps({"name": os.environ["NAME"], "installs": sys.argv[1] == "true"}))
+          EOF
+          cat install.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: hash-${{ matrix.id }}-${{ matrix.attempt }}
-          path: hash.json
+          path: |
+            hash.json
+            install.json
+          if-no-files-found: warn
 
   build-docker:
     needs: plan
