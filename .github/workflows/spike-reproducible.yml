@@ -68,12 +68,28 @@ jobs:
           SOURCE_DATE_EPOCH: "1700000000"
           PIP_DISABLE_PIP_VERSION_CHECK: "1"
         run: |
-          python -m pip wheel --no-deps --no-binary "$NAME" --no-cache-dir -w out "$NAME==$VERSION" > build.log 2>&1 || true
+          # Build from a fixed folder, not pip's random temp one, so paths baked into binaries match between builds.
+          python -m pip download --no-deps --no-binary :all: --no-cache-dir -d sdist "$NAME==$VERSION" > build.log 2>&1 || true
+          python - <<'EOF' >> build.log 2>&1 || true
+          import pathlib, shutil, tarfile, zipfile
+          sd = next(pathlib.Path("sdist").iterdir())
+          dest = pathlib.Path("C:/b" if __import__("os").name == "nt" else "/tmp/b")
+          shutil.rmtree(dest, ignore_errors=True); dest.mkdir(parents=True)
+          (tarfile.open(sd) if sd.name.endswith((".tar.gz", ".tgz")) else zipfile.ZipFile(sd)).extractall(dest)
+          EOF
+          src=$(python -c "import pathlib,os; d=pathlib.Path('C:/b' if os.name=='nt' else '/tmp/b'); print(next(d.iterdir()))")
+          python -m pip wheel --no-deps --no-cache-dir -w out "$src" >> build.log 2>&1 || true
           python - <<'EOF' > hash.json
           import hashlib, json, os, pathlib
           wheels = sorted(pathlib.Path("out").glob("*.whl"))
+          import zipfile
+          members = {}
+          if wheels:
+              with zipfile.ZipFile(wheels[0]) as z:
+                  members = {i.filename: hashlib.sha256(z.read(i)).hexdigest() for i in z.infolist()}
           print(json.dumps({"name": os.environ["NAME"], "wheel": wheels[0].name if wheels else None,
-                            "sha256": hashlib.sha256(wheels[0].read_bytes()).hexdigest() if wheels else None}))
+                            "sha256": hashlib.sha256(wheels[0].read_bytes()).hexdigest() if wheels else None,
+                            "members": members}))
           EOF
           cat hash.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -100,12 +116,18 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/out"
           docker run --rm -v "$RUNNER_TEMP/out:/out" -e NAME -e VERSION -e SOURCE_DATE_EPOCH=1700000000 "$IMAGE" sh -c \
-            'apk add --no-cache build-base >/dev/null && pip wheel --no-deps --no-binary "$NAME" --no-cache-dir -w /out "$NAME==$VERSION" >/out/build.log 2>&1; true'
+            'apk add --no-cache build-base >/dev/null && pip download --no-deps --no-binary :all: --no-cache-dir -d /tmp/sd "$NAME==$VERSION" >/out/build.log 2>&1 && mkdir -p /tmp/b && cd /tmp/b && for f in /tmp/sd/*; do case "$f" in *.zip) python -m zipfile -e "$f" . ;; *) tar xf "$f" ;; esac; done && pip wheel --no-deps --no-cache-dir -w /out /tmp/b/* >>/out/build.log 2>&1; true'
           python3 - <<'EOF' > hash.json
           import hashlib, json, os, pathlib
           wheels = sorted(pathlib.Path(os.environ["RUNNER_TEMP"], "out").glob("*.whl"))
+          import zipfile
+          members = {}
+          if wheels:
+              with zipfile.ZipFile(wheels[0]) as z:
+                  members = {i.filename: hashlib.sha256(z.read(i)).hexdigest() for i in z.infolist()}
           print(json.dumps({"name": os.environ["NAME"], "wheel": wheels[0].name if wheels else None,
-                            "sha256": hashlib.sha256(wheels[0].read_bytes()).hexdigest() if wheels else None}))
+                            "sha256": hashlib.sha256(wheels[0].read_bytes()).hexdigest() if wheels else None,
+                            "members": members}))
           EOF
           cat hash.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
