@@ -1,0 +1,148 @@
+name: Spike - reproducible lab wheels
+
+# Not for merging. Do two independent builds of the same sdist give byte-identical wheels? Builds each clean lab
+# pair (built, imported, GIL kept off) twice in separate jobs and compares sha256s. Only hashes leave the jobs; no
+# wheel is uploaded or published, and the jobs have a read-only token.
+
+on:
+  pull_request:
+    paths: [.github/workflows/spike-reproducible.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      hosted: ${{ steps.plan.outputs.hosted }}
+      docker: ${{ steps.plan.outputs.docker }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: plan
+        shell: python
+        run: |
+          import json, os, sys
+          sys.path.insert(0, "scripts")
+          import build_lab
+          results = json.load(open("data/builds.json"))["results"]
+          clean = [r for r in results if r["outcome"] == "built" and r["import"] == "ok" and r["extensions"]
+                   and r.get("gil") != "re-enabled"]
+          jobs = []
+          for i, r in enumerate(sorted(clean, key=lambda r: (r["name"], r["target"]))):
+              spec = build_lab.TARGETS[r["target"]]
+              for attempt in (1, 2):
+                  job = {"id": f"{i}", "attempt": attempt, "name": r["name"], "version": r["version"],
+                         "target": r["target"], "runner": spec["runner"], "python": spec["python"]}
+                  if "image" in spec:
+                      job["image"] = spec["image"]
+                  jobs.append(job)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"hosted={json.dumps([j for j in jobs if 'image' not in j])}\n")
+              f.write(f"docker={json.dumps([j for j in jobs if 'image' in j])}\n")
+          print(f"{len(clean)} pairs, {len(jobs)} builds")
+
+  build:
+    needs: plan
+    name: ${{ matrix.name }} ${{ matrix.version }} (${{ matrix.target }}) build ${{ matrix.attempt }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      max-parallel: 30
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.hosted) }}
+    steps:
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Build the wheel and hash it
+        shell: bash
+        env:
+          NAME: ${{ matrix.name }}
+          VERSION: ${{ matrix.version }}
+          SOURCE_DATE_EPOCH: "1700000000"
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
+        run: |
+          python -m pip wheel --no-deps --no-binary "$NAME" --no-cache-dir -w out "$NAME==$VERSION" > build.log 2>&1 || true
+          python - <<'EOF' > hash.json
+          import hashlib, json, os, pathlib
+          wheels = sorted(pathlib.Path("out").glob("*.whl"))
+          print(json.dumps({"name": os.environ["NAME"], "wheel": wheels[0].name if wheels else None,
+                            "sha256": hashlib.sha256(wheels[0].read_bytes()).hexdigest() if wheels else None}))
+          EOF
+          cat hash.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hash-${{ matrix.id }}-${{ matrix.attempt }}
+          path: hash.json
+
+  build-docker:
+    needs: plan
+    name: ${{ matrix.name }} ${{ matrix.version }} (${{ matrix.target }}) build ${{ matrix.attempt }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.docker) }}
+    steps:
+      - name: Build the wheel and hash it
+        env:
+          IMAGE: ${{ matrix.image }}
+          NAME: ${{ matrix.name }}
+          VERSION: ${{ matrix.version }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          docker run --rm -v "$RUNNER_TEMP/out:/out" -e NAME -e VERSION -e SOURCE_DATE_EPOCH=1700000000 "$IMAGE" sh -c \
+            'apk add --no-cache build-base >/dev/null && pip wheel --no-deps --no-binary "$NAME" --no-cache-dir -w /out "$NAME==$VERSION" >/out/build.log 2>&1; true'
+          python3 - <<'EOF' > hash.json
+          import hashlib, json, os, pathlib
+          wheels = sorted(pathlib.Path(os.environ["RUNNER_TEMP"], "out").glob("*.whl"))
+          print(json.dumps({"name": os.environ["NAME"], "wheel": wheels[0].name if wheels else None,
+                            "sha256": hashlib.sha256(wheels[0].read_bytes()).hexdigest() if wheels else None}))
+          EOF
+          cat hash.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hash-${{ matrix.id }}-${{ matrix.attempt }}
+          path: hash.json
+
+  compare:
+    needs: [plan, build, build-docker]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: hash-*
+          path: hashes
+      - name: Compare the two builds of each pair
+        shell: python
+        run: |
+          import json, os, pathlib, collections
+          pairs = collections.defaultdict(dict)
+          for p in pathlib.Path("hashes").glob("hash-*/hash.json"):
+              pid, attempt = p.parent.name.removeprefix("hash-").rsplit("-", 1)
+              pairs[pid][attempt] = json.loads(p.read_text())
+          same = differ = missing = 0
+          lines = ["| package | wheel | result |", "|---|---|---|"]
+          for pid, builds in sorted(pairs.items(), key=lambda kv: int(kv[0])):
+              a, b = builds.get("1"), builds.get("2")
+              if not a or not b or not a["sha256"] or not b["sha256"]:
+                  missing += 1; verdict = "a build is missing"
+              elif a["sha256"] == b["sha256"]:
+                  same += 1; verdict = "identical"
+              else:
+                  differ += 1; verdict = "differs"
+              lines.append(f"| {(a or b or {}).get('name')} | {(a or b or {}).get('wheel')} | {verdict} |")
+          summary = f"**{same} identical, {differ} differ, {missing} missing** of {len(pairs)} pairs\n\n" + "\n".join(lines)
+          print(summary)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write(summary + "\n")
