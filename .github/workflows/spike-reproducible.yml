@@ -71,9 +71,8 @@ jobs:
           PIP_DISABLE_PIP_VERSION_CHECK: "1"
         run: |
           # Microsoft's compiler and linker stamp a time and a random debug ID into every .pyd unless told not to.
-          if [ "$RUNNER_OS" = Windows ]; then export CL=/Brepro LINK=/Brepro RUSTFLAGS="-C link-arg=/Brepro"; fi
           # Build from a fixed folder, not pip's random temp one, so paths baked into binaries match between builds.
-          python -m pip download --no-deps --no-binary :all: --no-cache-dir -d sdist "$NAME==$VERSION" > build.log 2>&1 || true
+          python -m pip download --no-deps --no-binary "$NAME" --no-cache-dir -d sdist "$NAME==$VERSION" > build.log 2>&1 || true
           python - <<'EOF' >> build.log 2>&1 || true
           import pathlib, shutil, tarfile, zipfile
           sd = next(pathlib.Path("sdist").iterdir())
@@ -82,6 +81,8 @@ jobs:
           (tarfile.open(sd) if sd.name.endswith((".tar.gz", ".tgz")) else zipfile.ZipFile(sd)).extractall(dest)
           EOF
           src=$(python -c "import pathlib,os; d=pathlib.Path('C:/b' if os.name=='nt' else '/tmp/b'); print(next(d.iterdir()))")
+          # Only for the build itself: build tools come as wheels, as pip installs them.
+          if [ "$RUNNER_OS" = Windows ]; then export CL=/Brepro LINK=/Brepro RUSTFLAGS="-C link-arg=/Brepro"; fi
           python -m pip wheel --no-deps --no-cache-dir -w out "$src" >> build.log 2>&1 || true
           python - <<'EOF' > hash.json
           import hashlib, json, os, pathlib
