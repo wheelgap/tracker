@@ -353,6 +353,23 @@ class Dispatch(unittest.TestCase):
         self.run_dispatch(iter([SHA] * 4), runs=lambda: next(polls))
         self.assertEqual(len(self.started()), 4)
 
+    def test_a_start_that_failed_but_made_the_run_isnt_repeated(self):
+        made = []
+
+        def gh(args):
+            if args[:2] == ["workflow", "run"]:
+                made.append(args)
+                raise subprocess.CalledProcessError(502, "gh")
+            return (SHA + "\n").encode()
+
+        def runs(repo, since):
+            return [{"display_title": gap_wheels.title("99-1", j), "status": "queued"} for j in self.jobs[: len(made)]]
+
+        with mock.patch.object(gap_wheels, "gh", gh), mock.patch.object(gap_wheels, "list_runs", runs):
+            gap_wheels.main(["dispatch", "--plan", str(self.plan), "--batch", "99-1", "--repo", "o/r", "--sha", SHA,
+                             "--since", "2026-11-16T02:00:00Z", "--parallel", "10"])  # fmt: skip
+        self.assertEqual(len(made), 4)  # one POST per build, none repeated
+
     def test_retry(self):
         calls = iter([subprocess.CalledProcessError(1, "gh"), b"ok"])
 

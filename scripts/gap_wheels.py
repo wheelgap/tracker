@@ -404,13 +404,14 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
     check_args(args)
     jobs = json.loads(Path(args.plan).read_text(encoding="utf-8"))
     for n, job in enumerate(jobs):
-        # A commit on main mid-batch would start the rest at another commit, which collect rightly refuses: stop loudly.
-        if (tip := retry(lambda: gh(["api", f"repos/{args.repo}/commits/main", "--jq", ".sha"])).decode().strip()) != args.sha:
-            raise SystemExit(f"gap_wheels: main moved to {tip} after {n} of {len(jobs)} builds started; run the batch again")
         # At most --parallel of this batch's builds at once, so the batch doesn't hold every runner the account has.
         while sum(r.get("status") != "completed" for r in this_batch(retry(lambda: list_runs(args.repo, args.since)),
                                                                       args.batch)) >= args.parallel:  # fmt: skip
             time.sleep(60)
+        # A commit on main mid-batch would start the rest at another commit, which collect rightly refuses: stop loudly.
+        # Checked last thing before starting the build, so the window is seconds, not the wait above.
+        if (tip := retry(lambda: gh(["api", f"repos/{args.repo}/commits/main", "--jq", ".sha"])).decode().strip()) != args.sha:
+            raise SystemExit(f"gap_wheels: main moved to {tip} after {n} of {len(jobs)} builds started; run the batch again")
         spec = build_lab.TARGETS[job["target"]]  # the plan's own values, checked again: they become a run's inputs
         if not (build_lab.NAME.fullmatch(job["name"]) and build_lab.VERSION.fullmatch(job["version"])):
             raise SystemExit(f"gap_wheels: not a plan job: {job!r}")
@@ -419,10 +420,24 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
                   "image": spec.get("image", "")}  # fmt: skip
         command = ["workflow", "run", BUILD_WORKFLOW, "--repo", args.repo, "--ref", "main",
                    *[x for k, v in fields.items() for x in ("-f", f"{k}={v}")]]  # fmt: skip
-        retry(lambda: gh(command))  # noqa: B023  (called at once)
+        start(command, title(args.batch, job), args)
         print(f"started {title(args.batch, job)}", flush=True)
         time.sleep(2)  # well under GitHub's limit on write requests
     return 0
+
+
+def start(command: list[str], name: str, args: argparse.Namespace, attempts: int = 4) -> None:
+    """Start one build run. Starting is a POST, so a failed attempt may still have made the run: look for it before
+    trying again, since a second run with the same title would make collect refuse both."""
+    for attempt in range(attempts):
+        try:
+            gh(command)
+            return
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            time.sleep(30 * (attempt + 1))
+            if any(r.get("display_title") == name for r in retry(lambda: list_runs(args.repo, args.since))):
+                return
+    raise SystemExit(f"gap_wheels: couldn't start {name}")
 
 
 def retry[T](call: Callable[[], T], attempts: int = 4) -> T:
