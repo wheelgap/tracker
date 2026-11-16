@@ -72,9 +72,18 @@ function pythons() {
   return [...new Set(state.data.targets.map((t) => t.python))];
 }
 
+// Whether the scan checked Pyodide's own builds for this Python (wheelgap --pyodide-lock): coverage.json lists them.
+function pyodideLockChecked(python) {
+  return Array.isArray(state.data?.pyodide_locks) && state.data.pyodide_locks.some((l) => l && l.python === python);
+}
+
 function platformDetail(t) {
   const release = t.platform === "pyodide" ? state.pyodide[t.python] : null;
   if (release) return `wasm32 · PyPI wheels and Pyodide ${release.pyodide}'s builds`;
+  // data/pyodide.json didn't load, but the counts still include Pyodide's builds
+  if (t.platform === "pyodide" && (pyodideLockChecked(t.python) || (state.data.summary?.[t.label]?.bundled ?? 0) > 0)) {
+    return "wasm32 · PyPI wheels and Pyodide's builds";
+  }
   return platformName(t.platform)[1];
 }
 
@@ -338,8 +347,9 @@ function renderOmniAnswer() {
     cardClass = "verdict-missing";
     badgeClass = "badge-missing";
     badgeLabel = "✕ Cannot Install";
+    // "No Pyodide build" only when the scan checked Pyodide's own builds for this Python.
     summary = pl === "pyodide"
-      ? `has no wheel on PyPI for <strong>${esc(pname)}</strong> (Python ${esc(py)}) and no Pyodide build, so it can't be installed there`
+      ? `has no wheel on PyPI for <strong>${esc(pname)}</strong> (Python ${esc(py)})${pyodideLockChecked(py) ? " and no Pyodide build, so it can't be installed there" : ""}`
       : `has no wheel for <strong>${esc(pname)}</strong> (Python ${esc(py)}) and no source distribution, so pip can't install it`;
   } else {
     cardClass = "verdict-unknown";
@@ -1382,6 +1392,8 @@ async function main() {
   });
   $("search").addEventListener("input", (e) => {
     updateClearBtn();
+    // The card below is for the name last looked up: clear it while a new one is typed, so the two never disagree.
+    if ($("lookup").innerHTML) renderLookup("");
     updateSearchAutocomplete(e.target.value);
     renderOmniAnswer();
   });
