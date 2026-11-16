@@ -53,11 +53,20 @@ jobs:
           ONLY: ${{ inputs.only }}
           EVENT: ${{ github.event_name }}
           SCAN: ${{ github.event.workflow_run.conclusion }}
+          SCAN_EVENT: ${{ github.event.workflow_run.event }}
         run: |
-          # After the nightly scan: only Monday's, and only when it succeeded. Other days plan nothing.
-          if [ "$EVENT" = workflow_run ] && { [ "$(date -u +%u)" != 1 ] || [ "$SCAN" != success ]; }; then
-            echo "all=[]" >> "$GITHUB_OUTPUT"
-            exit 0
+          # After the nightly scan: only Monday's scheduled one (not a scan a push or a dispatch started), and only when
+          # it succeeded. Other runs plan nothing.
+          if [ "$EVENT" = workflow_run ]; then
+            if [ "$SCAN_EVENT" != schedule ] || [ "$(date -u +%u)" != 1 ]; then
+              echo "all=[]" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ "$SCAN" != success ]; then
+              echo "::notice::Monday's scan didn't succeed ($SCAN), so this week's gap-wheels batch is skipped"
+              echo "all=[]" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
           fi
           rotate=; [ "$EVENT" = workflow_run ] && rotate=--rotate
           # The batch is fixed here, so re-running only a later job still finds this batch's build runs.

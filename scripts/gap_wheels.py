@@ -110,8 +110,9 @@ def plan(builds: dict, limit: int, only: set[str] | None = None, start: int = 0)
 def cmd_plan(args: argparse.Namespace) -> int:
     builds = json.loads(Path(args.builds).read_text(encoding="utf-8"))
     only = {build_lab.canonical(n.strip()) for n in args.only.split(",") if n.strip()} if args.only else None
-    # --rotate: start each ISO week `--max` pairs further on, so a capped weekly batch covers every pair in turn.
-    start = dt.date.today().isocalendar().week * args.max if args.rotate else 0
+    # --rotate: start each week `--max` pairs further on, so a capped weekly batch covers every pair in turn. Weeks are
+    # counted without resetting (an ISO week number jumps back to 1 each January).
+    start = dt.date.today().toordinal() // 7 * args.max if args.rotate else 0
     jobs = plan(builds, args.max, only, start)
     hosted = [j for j in jobs if "image" not in j]
     docker = [j for j in jobs if "image" in j]
