@@ -495,11 +495,14 @@ def run_build(name: str, version: str, target: str, work: Path) -> dict | None:
     return result
 
 
-def _import_check(work: Path, env: dict, mode: str, ours: Path, modules: list[str]) -> tuple[int, dict | None, str] | None:
-    """Run IMPORT_CHECK in a fresh interpreter: (exit code, its answer or None, stderr). A timeout is a failure; an
-    exit without an answer and without an error (something called sys.exit(0) on import) is None: no answer."""
+def _import_check(
+    work: Path, env: dict, mode: str, ours: Path, modules: list[str], python: str = sys.executable
+) -> tuple[int, dict | None, str] | None:
+    """Run IMPORT_CHECK in a fresh interpreter (`python`: gap_wheels runs it in a fresh venv): (exit code, its
+    answer or None, stderr). A timeout is a failure; an exit without an answer and without an error (something
+    called sys.exit(0) on import) is None: no answer."""
     try:
-        c = subprocess.run([sys.executable, "-c", IMPORT_CHECK, mode, str(ours), *modules], check=False,
+        c = subprocess.run([python, "-c", IMPORT_CHECK, mode, str(ours), *modules], check=False,
                            capture_output=True, text=True, errors="replace", timeout=IMPORT_TIMEOUT, cwd=work,
                            env=env)  # fmt: skip
     except subprocess.TimeoutExpired:

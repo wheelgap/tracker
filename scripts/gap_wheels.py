@@ -1,10 +1,14 @@
-"""Gap wheels: verify which of the build lab's clean builds are reproducible and install. Nothing is published.
+"""Gap wheels: verify which of the build lab's clean builds are reproducible and install, and publish the Windows ones.
 
     python3 scripts/gap_wheels.py plan data/builds.json [--max N] [--only a,b] --github-output FILE
     python scripts/gap_wheels.py build --name NAME --version VERSION --target TARGET --attempt 1|2 --runner R --out FILE
     python3 scripts/gap_wheels.py dispatch --plan PLAN_JSON --batch RUNID-ATTEMPT
     python3 scripts/gap_wheels.py collect --plan PLAN_JSON --batch B --repo R --sha SHA --since TIME --results DIR
     python3 scripts/gap_wheels.py merge RESULTS_DIR --plan PLAN_JSON --out MANIFEST [--summary FILE]
+    python3 scripts/gap_wheels.py stage --manifest MANIFEST --staged DIR --repo R [--github-output FILE]
+    python scripts/gap_wheels.py install-test --staged DIR --target TARGET --out FILE
+    python3 scripts/gap_wheels.py publish --staged-json JSON --files DIR --tested DIR --index data/gap-wheels.json \
+        --release-dir DIR
 
 A *pair* is a release and lab target the build lab built cleanly (data/builds.json: built, imported, a compiled
 extension module, and on free-threaded Python the GIL kept off), so PyPI has no wheel for it there. Each pair is built
@@ -30,8 +34,9 @@ artifact token, and that token can write any artifact name in its own workflow r
 workflow run of its own (`dispatch` starts one run of gap-wheel-build.yml per build, titled with its batch, pair and
 attempt), and `collect` takes each result only from the one run with that exact title, started from main at the
 coordinator's commit by workflow_dispatch after the batch began; two runs with the same title mean neither counts.
-A build can then forge nothing but its own result. This step uploads no wheel anywhere: only results (hashes)
-leave the build jobs.
+A build can then forge nothing but its own result. Each build run also keeps its wheel as its own `wheel` artifact;
+stage takes a file from it only if its sha256 is the one both builds reported, so a build can't substitute bytes
+either. See the stage/install-test/publish section below for what is made public, and how.
 """
 
 from __future__ import annotations
@@ -179,7 +184,9 @@ def wheel_members(wheel: Path) -> dict[str, str]:
         return {}
 
 
-def run_build(name: str, version: str, attempt: int, work: Path, members: dict[str, str] | None = None) -> dict:
+def run_build(
+    name: str, version: str, attempt: int, work: Path, members: dict[str, str] | None = None, keep: Path | None = None
+) -> dict:
     """Download the sdist, build the wheel from a fixed folder, hash it, and (first attempt) install it from a local
     folder into a fresh venv with nothing compiled. Fields left None mean that step didn't happen."""
     fields: dict = {"sdist": None, "sdist_sha256": None, "wheel": None, "sha256": None, "installs": None}
@@ -213,6 +220,9 @@ def run_build(name: str, version: str, attempt: int, work: Path, members: dict[s
         print(f"gap_wheels: expected one wheel, found {len(wheels)}", file=sys.stderr)
         return fields
     fields.update(wheel=wheels[0].name, sha256=sha256(wheels[0]))
+    if keep is not None:  # uploaded as this run's `wheel` artifact; stage takes it only if its sha256 is verified
+        keep.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(wheels[0], keep / wheels[0].name)
     if members is not None:
         members.update(wheel_members(wheels[0]))
     if attempt == 1:
@@ -247,7 +257,8 @@ def cmd_build(args: argparse.Namespace) -> int:
         return 3
     members: dict[str, str] = {}
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-        fields = run_build(args.name, args.version, args.attempt, Path(tmp), members)
+        keep = Path(args.wheel_dir) if args.wheel_dir else None
+        fields = run_build(args.name, args.version, args.attempt, Path(tmp), members, keep)
     result = {"schema": SCHEMA, "name": args.name, "version": args.version, "target": target,
               "attempt": args.attempt, "runner": args.runner, **fields}  # fmt: skip
     Path(args.out).write_text(json.dumps(result) + "\n", encoding="utf-8")
@@ -619,6 +630,288 @@ def cmd_collect(args: argparse.Namespace) -> int:
     return 0
 
 
+# --- stage, install-test and publish: making verified wheels public ---------------------------------------------------
+#
+# stage (trusted, in the coordinator): for each verified wheel, take the file from its build run's `wheel` artifact and
+#   keep it only if its sha256 is the one both builds reported, it is for a Windows target, PyPI names an
+#   OSI-approved licence for the release, and the project hasn't opted out.
+# install-test (untrusted: it imports package code): on a fresh runner of the target, install each staged wheel
+#   into a new venv and import it as the build lab does. Its answers only decide whether a byte-verified wheel is
+#   worth publishing; a package's code could lie about them, but never change which bytes are published.
+# publish (trusted, never runs package code): re-check every file against the sha256 stage passed it, then add it to
+#   data/gap-wheels.json; the workflow attests the files, uploads them to the `gap-wheels` release and deploys the
+#   index the site builds from that file (scripts/build_gap_index.py).
+
+# Windows tags name exactly what a wheel runs on. A Linux wheel from `pip wheel` is tagged linux_* instead, which pip
+# installs on any Linux, glibc or musl and any version: those need auditwheel's manylinux/musllinux tag first.
+PUBLISH_PLATFORM = re.compile(r"win_(?:arm64|amd64)", re.ASCII)
+ASSET = re.compile(r"[A-Za-z0-9._-]{1,200}\.whl", re.ASCII)  # release asset names: GitHub rewrites other characters
+RUN_URL = re.compile(r"https://github\.com/[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}/actions/runs/([0-9]{1,20})")
+MAX_WHEEL_BYTES = 500_000_000
+MAX_TESTED_BYTES = 200_000
+RELEASE = "gap-wheels"
+INDEX_SCHEMA = 1
+
+
+def licence(info: object) -> str | None:
+    """The release's licence when PyPI's metadata names one we may redistribute: a PEP 639 SPDX expression with no
+    LicenseRef, or OSI-approved classifiers. None otherwise (free text isn't read: refuse rather than guess)."""
+    if not isinstance(info, dict):
+        return None
+    expr = info.get("license_expression")
+    if isinstance(expr, str) and expr.strip():
+        expr = expr.strip()
+        ok = re.fullmatch(r"[A-Za-z0-9.+ ()-]{1,200}", expr, re.ASCII) and "licenseref" not in expr.lower()
+        return expr if ok else None
+    classifiers = info.get("classifiers") if isinstance(info.get("classifiers"), list) else []
+    osi = [c.removeprefix("License :: OSI Approved :: ") for c in classifiers
+           if isinstance(c, str) and c.startswith("License :: OSI Approved :: ")]  # fmt: skip
+    return "; ".join(osi)[:200] if osi else None
+
+
+def pypi_info(name: str, version: str) -> dict | None:
+    """PyPI's `info` for the release, or None if PyPI couldn't be asked."""
+    try:
+        with urllib.request.urlopen(f"https://pypi.org/pypi/{name}/{version}/json", timeout=10) as r:
+            data = json.load(r)
+    except (OSError, ValueError):
+        return None
+    return data.get("info") if isinstance(data, dict) and isinstance(data.get("info"), dict) else None
+
+
+def platform_ok(wheel: str) -> bool:
+    platforms = wheel[: -len(".whl")].split("-")[-1].split(".")
+    return all(PUBLISH_PLATFORM.fullmatch(p) for p in platforms)
+
+
+def unwrap_wheel(archive: bytes, filename: str, digest: str) -> bytes | None:
+    """The wheel from a `wheel` artifact zip: exactly one member, named `filename`, whose sha256 is `digest`."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive)) as z:
+            if z.namelist() != [filename]:
+                return None
+            data = bounded(z, filename, MAX_WHEEL_BYTES)
+    except (zipfile.BadZipFile, KeyError, zlib.error, EOFError, RuntimeError, NotImplementedError, OSError):
+        return None
+    return data if data is not None and hashlib.sha256(data).hexdigest() == digest else None
+
+
+def fetch_wheel(repo: str, run_id: int) -> bytes | None:
+    """The zip of a build run's `wheel` artifact, or None."""
+    listing = json.loads(gh(["api", f"repos/{repo}/actions/runs/{run_id}/artifacts?name=wheel"]))
+    artifacts = [a for a in listing.get("artifacts", []) if a.get("name") == "wheel" and not a.get("expired")]
+    if len(artifacts) != 1 or int(artifacts[0].get("size_in_bytes", 0)) > MAX_WHEEL_BYTES:
+        return None
+    return subprocess.run(["gh", "api", f"repos/{repo}/actions/artifacts/{int(artifacts[0]['id'])}/zip"],
+                          check=True, capture_output=True, timeout=600).stdout  # fmt: skip
+
+
+def opted_out(path: Path) -> set[str]:
+    """Canonical project names from the opt-out file (one per line, # comments)."""
+    if not path.is_file():
+        return set()
+    names = (line.split("#", 1)[0].strip() for line in path.read_text(encoding="utf-8").splitlines())
+    return {build_lab.canonical(n) for n in names if n}
+
+
+def stage_reason(wheel: dict, info: dict | None, optout: set[str]) -> str | None:
+    """Why a verified wheel isn't staged (None: stage it)."""
+    if not ASSET.fullmatch(wheel["wheel"]):
+        return "its filename can't be a release asset name"
+    if not platform_ok(wheel["wheel"]):
+        return "not a Windows wheel (a linux_* wheel needs auditwheel first)"
+    if build_lab.canonical(wheel["name"]) in optout:
+        return "the project opted out"
+    if info is None:
+        return "couldn't ask PyPI for the licence"
+    if licence(info) is None:
+        return "PyPI names no OSI-approved licence for it"
+    return None
+
+
+def cmd_stage(args: argparse.Namespace) -> int:
+    """Write STAGED/<wheel> and STAGED/staged.json for the verified wheels that may be published, and (for the
+    workflow) `staged`, the same list, and `tests`, the targets to install-test, as GitHub outputs."""
+    manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
+    out = Path(args.staged)
+    out.mkdir(parents=True, exist_ok=True)
+    optout = opted_out(Path(args.optout))
+    staged, lines = [], []
+    for wheel in manifest["wheels"]:
+        info = pypi_info(wheel["name"], wheel["version"])
+        reason = stage_reason(wheel, info, optout)
+        data = None
+        if reason is None:
+            ids = [int(m.group(1)) for u in wheel.get("builds") or [] if isinstance(u, str) and (m := RUN_URL.fullmatch(u))]
+            for run_id in ids:  # build 1's, else build 2's: both reported this sha256
+                archive = retry(lambda run_id=run_id: fetch_wheel(args.repo, run_id))
+                if archive is not None and (data := unwrap_wheel(archive, wheel["wheel"], wheel["sha256"])):
+                    break
+            if data is None:
+                reason = "no build run kept a wheel with the verified sha256"
+        lines.append(f"| {wheel['name']} | {wheel['version']} | {wheel['target']} | {reason or 'staged'} |")
+        if reason is not None:
+            continue
+        (out / wheel["wheel"]).write_bytes(data)
+        staged.append({**{k: wheel[k] for k in ("name", "version", "target", "wheel", "sha256", "sdist",
+                                                "sdist_sha256", "builds")},
+                       "licence": licence(info), "requires_python": info.get("requires_python") or None,
+                       "verified": manifest.get("date"), "batch": manifest.get("run")})  # fmt: skip
+    (out / "staged.json").write_text(json.dumps(staged, indent=1) + "\n", encoding="utf-8")
+    tests = sorted({w["target"] for w in staged})
+    matrix = [{"target": t, "runner": build_lab.TARGETS[t]["runner"], "python": build_lab.TARGETS[t]["python"],
+               "slug": t.replace(" ", "-")} for t in tests]  # fmt: skip
+    text = "\n".join([f"**{len(staged)} staged** of {len(manifest['wheels'])} verified", "",
+                      "| package | version | target | |", "|---|---|---|---|", *lines]) + "\n"  # fmt: skip
+    print(text)
+    if args.summary:
+        with open(args.summary, "a", encoding="utf-8") as f:
+            f.write(text)
+    if args.github_output:
+        with open(args.github_output, "a", encoding="utf-8") as f:
+            # The publish job trusts only this output for what to publish; the artifact is just the bytes.
+            f.write(f"staged={json.dumps(staged, separators=(',', ':'))}\n")
+            f.write(f"tests={json.dumps(matrix, separators=(',', ':'))}\n")
+    return 0
+
+
+def install_and_import(wheel: Path, target: str, work: Path) -> str | None:
+    """Install the wheel into a fresh venv (dependencies as pip resolves them) and import it as the build lab does;
+    on free-threaded Python the GIL must stay off. None if it works, else why not."""
+    venv = work / "venv"
+    shutil.rmtree(venv, ignore_errors=True)
+    subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True, timeout=INSTALL_TIMEOUT)
+    py = str(venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python"))
+    env = dict(os.environ, PIP_DISABLE_PIP_VERSION_CHECK="1", PIP_NO_INPUT="1")
+    try:
+        i = subprocess.run([py, "-m", "pip", "install", "--no-cache-dir", str(wheel)], check=False, env=env,
+                           capture_output=True, text=True, errors="replace", timeout=INSTALL_TIMEOUT)  # fmt: skip
+    except subprocess.TimeoutExpired:
+        return "install timed out"
+    print((i.stdout + i.stderr)[-3000:])
+    if i.returncode != 0:
+        return "pip couldn't install it"
+    modules, extension_modules, extensions = build_lab.wheel_modules(wheel)
+    ours = work / "wheel-modules.json"
+    ours.write_text(json.dumps(build_lab.wheel_names(wheel)), encoding="utf-8")
+    answers = []
+    for mode, names in (("top", modules), ("extensions", extension_modules)):
+        if mode == "extensions" and not extensions:
+            break
+        check = build_lab._import_check(work, env, mode, ours, names, python=py)
+        if check is None or check[0] != 0 or check[1] is None or not check[1]["loaded"]:
+            return f"the {mode} import check failed"
+        answers.append(check[1])
+    if not answers:
+        return "nothing to import"
+    if build_lab.TARGETS[target]["python"].endswith("t") and any(a.get("gil_enabled") for a in answers):
+        return "importing it turned the GIL back on"
+    return None
+
+
+def cmd_install_test(args: argparse.Namespace) -> int:
+    if (why := build_lab.interpreter_problem(args.target)) is not None:
+        print(f"gap_wheels: this Python isn't {args.target}'s: {why}", file=sys.stderr)
+        return 3
+    staged = json.loads((Path(args.staged) / "staged.json").read_text(encoding="utf-8"))
+    tested = {}
+    for w in staged:
+        if w["target"] != args.target:
+            continue
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            why = install_and_import(Path(args.staged) / w["wheel"], args.target, Path(tmp))
+        print(f"{w['wheel']}: {why or 'ok'}")
+        tested[w["wheel"]] = why is None
+    Path(args.out).write_text(json.dumps({"target": args.target, "tested": tested}) + "\n", encoding="utf-8")
+    return 0
+
+
+def read_tested(folder: Path) -> dict[str, dict[str, bool]]:
+    """By target: {wheel: passed} from the untrusted install-test artifacts (each tested-*/tested.json)."""
+    out: dict[str, dict[str, bool]] = {}
+    for path in sorted(folder.glob("tested-*/tested.json")) if folder.is_dir() else []:
+        if path.is_symlink() or path.stat().st_size > MAX_TESTED_BYTES:
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (UnicodeDecodeError, ValueError, RecursionError):
+            continue
+        if not isinstance(data, dict) or not isinstance(data.get("tested"), dict) or data.get("target") not in build_lab.TARGETS:
+            continue
+        if data["target"] in out:  # two answers for one target: neither counts
+            out[data["target"]] = {}
+            continue
+        out[data["target"]] = {k: v for k, v in data["tested"].items() if isinstance(k, str) and v is True}
+    return out
+
+
+def select(staged: list[dict], tested: dict[str, dict[str, bool]], folder: Path,
+           published: dict[str, dict]) -> tuple[list[dict], list[str]]:  # fmt: skip
+    """(entries to publish now, a line saying what happened to each staged wheel). `staged` is the staging job's own
+    output, the only thing trusted here: a wheel publishes when its file in `folder` has that sha256 and its
+    target's install test passed. A filename already published keeps its first bytes."""
+    new, lines = [], []
+    for w in staged:
+        name = w["wheel"]
+        path = folder / name
+        if not path.is_file() or path.is_symlink() or sha256(path) != w["sha256"]:
+            lines.append(f"{name}: the staged file isn't the verified one; not published")
+        elif not tested.get(w["target"], {}).get(name):
+            lines.append(f"{name}: didn't pass the install test on a fresh runner; not published")
+        elif name in published:
+            same = published[name].get("sha256") == w["sha256"]
+            lines.append(f"{name}: {'already published' if same else 'published before with other bytes; kept those'}")
+        else:
+            new.append(w)
+            lines.append(f"{name}: published")
+    return new, lines
+
+
+def trusted_staged(text: str) -> list[dict]:
+    """The staging job's `staged` output, checked for shape (it's ours, but a bad one must stop, not half-publish)."""
+    staged = json.loads(text)
+    keys = {"name", "version", "target", "wheel", "sha256", "sdist", "sdist_sha256", "builds", "licence",
+            "requires_python", "verified", "batch"}  # fmt: skip
+    if not isinstance(staged, list) or not all(
+        isinstance(w, dict) and set(w) == keys and isinstance(w["wheel"], str) and ASSET.fullmatch(w["wheel"])
+        and isinstance(w["sha256"], str) and SHA256.fullmatch(w["sha256"]) and w["target"] in build_lab.TARGETS
+        and platform_ok(w["wheel"])
+        for w in staged
+    ):
+        raise SystemExit("gap_wheels: --staged-json isn't what stage writes")
+    return staged
+
+
+def cmd_publish(args: argparse.Namespace) -> int:
+    """Copy the wheels to publish into RELEASE_DIR and add them to the index file; list in RELEASE_DIR/withdraw.txt
+    the published wheels of projects that have since opted out (removed from the index here)."""
+    staged = trusted_staged(args.staged_json)
+    staged_dir = Path(args.files)
+    index_path = Path(args.index)
+    index = json.loads(index_path.read_text(encoding="utf-8")) if index_path.is_file() else {"schema": INDEX_SCHEMA, "wheels": []}
+    published = {w["wheel"]: w for w in index["wheels"]}
+    new, lines = select(staged, read_tested(Path(args.tested)), staged_dir, published)
+    release = Path(args.release_dir)
+    release.mkdir(parents=True, exist_ok=True)
+    today = dt.datetime.now(dt.UTC).date().isoformat()
+    for w in new:
+        shutil.copyfile(staged_dir / w["wheel"], release / w["wheel"])
+        index["wheels"].append({**w, "published": today, "publish_run": args.run})
+    optout = opted_out(Path(args.optout))
+    withdrawn = [w["wheel"] for w in index["wheels"] if build_lab.canonical(w["name"]) in optout]
+    index["wheels"] = sorted((w for w in index["wheels"] if w["wheel"] not in withdrawn),
+                             key=lambda w: (build_lab.canonical(w["name"]), w["wheel"]))  # fmt: skip
+    (release / "withdraw.txt").write_text("".join(f"{n}\n" for n in withdrawn), encoding="utf-8")
+    index_path.write_text(json.dumps(index, indent=1) + "\n", encoding="utf-8")
+    lines += [f"{n}: withdrawn (the project opted out)" for n in withdrawn]
+    text = f"**{len(new)} published**, {len(index['wheels'])} in the index\n\n" + "".join(f"- {ln}\n" for ln in lines)
+    print(text)
+    if args.summary:
+        with open(args.summary, "a", encoding="utf-8") as f:
+            f.write(text)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -633,6 +926,7 @@ def main(argv: list[str] | None = None) -> int:
     for flag in ("--name", "--version", "--target", "--runner", "--out"):
         b.add_argument(flag, required=True)
     b.add_argument("--attempt", type=int, required=True)
+    b.add_argument("--wheel-dir", help="copy the built wheel here (the build run uploads it as `wheel`)")
     b.set_defaults(func=cmd_build)
     m = sub.add_parser("merge")
     m.add_argument("results")
@@ -650,6 +944,24 @@ def main(argv: list[str] | None = None) -> int:
         c.add_argument(flag, required=True)
     c.add_argument("--wait", type=int, default=240, help="minutes to wait for the build runs")
     c.set_defaults(func=cmd_collect)
+    st = sub.add_parser("stage")
+    for flag in ("--manifest", "--staged", "--repo"):
+        st.add_argument(flag, required=True)
+    st.add_argument("--optout", default="data/gap-wheels-optout.txt")
+    st.add_argument("--summary")
+    st.add_argument("--github-output")
+    st.set_defaults(func=cmd_stage)
+    t = sub.add_parser("install-test")
+    for flag in ("--staged", "--target", "--out"):
+        t.add_argument(flag, required=True)
+    t.set_defaults(func=cmd_install_test)
+    pb = sub.add_parser("publish")
+    for flag in ("--staged-json", "--files", "--tested", "--index", "--release-dir"):
+        pb.add_argument(flag, required=True)
+    pb.add_argument("--optout", default="data/gap-wheels-optout.txt")
+    pb.add_argument("--run", default="")
+    pb.add_argument("--summary")
+    pb.set_defaults(func=cmd_publish)
     args = parser.parse_args(argv)
     return args.func(args)
 

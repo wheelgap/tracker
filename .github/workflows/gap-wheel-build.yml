@@ -3,8 +3,9 @@ name: Gap wheel build
 # One build of one gap-wheels pair, started by gap-wheels.yml (`gap_wheels.py dispatch`). Each build gets a workflow
 # run of its own so that its artifact token, which the package's build code can read, can't write another build's
 # result: the coordinator takes a result only from the one run with that build's exact title. See
-# scripts/gap_wheels.py. Nothing here is published, and this run's token is read-only. Don't add actions/cache (or a
-# setup action's cache) here: build code can write cache entries other workflows on main would restore.
+# scripts/gap_wheels.py. The wheel is kept as this run's `wheel` artifact; the coordinator takes it only if its sha256
+# is the one both builds reported. This run's token is read-only. Don't add actions/cache (or a setup action's cache)
+# here: build code can write cache entries other workflows on main would restore.
 run-name: gap-wheel ${{ inputs.batch }} ${{ inputs.name }} ${{ inputs.version }} ${{ inputs.target }} build ${{ inputs.attempt }}
 
 on:
@@ -50,7 +51,7 @@ jobs:
           TARGET: ${{ inputs.target }}
           ATTEMPT: ${{ inputs.attempt }}
           RUNNER: ${{ inputs.runner }}
-        run: python scripts/gap_wheels.py build --name "$NAME" --version "$VERSION" --target "$TARGET" --attempt "$ATTEMPT" --runner "$RUNNER" --out result.json
+        run: python scripts/gap_wheels.py build --name "$NAME" --version "$VERSION" --target "$TARGET" --attempt "$ATTEMPT" --runner "$RUNNER" --out result.json --wheel-dir "$RUNNER_TEMP/wheel"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -58,6 +59,13 @@ jobs:
           path: |
             result.json
             members.json
+          if-no-files-found: ignore
+          retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: wheel
+          path: ${{ runner.temp }}/wheel/*.whl
           if-no-files-found: ignore
           retention-days: 7
 
@@ -82,7 +90,7 @@ jobs:
           # The checkout is mounted read-only; the result goes to its own folder.
           mkdir -p "$RUNNER_TEMP/out"
           docker run --rm -v "$PWD:/lab:ro" -v "$RUNNER_TEMP/out:/out" -w /lab -e NAME -e VERSION -e TARGET -e ATTEMPT -e RUNNER "$IMAGE" sh -c \
-            'apk add --no-cache build-base >/dev/null && python scripts/gap_wheels.py build --name "$NAME" --version "$VERSION" --target "$TARGET" --attempt "$ATTEMPT" --runner "$RUNNER" --out /out/result.json'
+            'apk add --no-cache build-base >/dev/null && python scripts/gap_wheels.py build --name "$NAME" --version "$VERSION" --target "$TARGET" --attempt "$ATTEMPT" --runner "$RUNNER" --out /out/result.json --wheel-dir /out/wheel'
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -90,5 +98,12 @@ jobs:
           path: |
             ${{ runner.temp }}/out/result.json
             ${{ runner.temp }}/out/members.json
+          if-no-files-found: ignore
+          retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: wheel
+          path: ${{ runner.temp }}/out/wheel/*.whl
           if-no-files-found: ignore
           retention-days: 7
