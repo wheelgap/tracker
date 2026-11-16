@@ -46,6 +46,30 @@ def test_fields_and_valid_json():
     assert "numpy 2.3.1 has a prebuilt wheel for 1 of 2 platforms" in data["description"]
 
 
+def test_open_graph_and_twitter_card_tags():
+    page = build(scan())
+
+    def meta(prefix, key):
+        match = re.search(rf'<meta {prefix}="{key}" content="([^"]*)">', page)
+        assert match, key
+        return match.group(1)
+
+    assert meta("property", "og:type") == "website"
+    assert meta("property", "og:title") == "numpy wheel coverage: Linux, Alpine, macOS, Windows, ARM, Pyodide"
+    assert meta("property", "og:url") == "https://wheelgap.github.io/tracker/p/numpy/"
+    assert meta("property", "og:image") == "https://wheelgap.github.io/tracker/og.png"
+    assert meta("property", "og:image:width") == "1280"
+    assert meta("property", "og:image:height") == "640"
+    assert "5,000 most downloaded PyPI packages" in meta("property", "og:image:alt")
+    assert meta("name", "twitter:card") == "summary_large_image"
+
+
+def test_open_graph_values_are_escaped():
+    page = build(scan(name='evil"&<x>'))
+    assert 'evil&quot;&amp;&lt;x&gt;' in page
+    assert 'content="evil"&' not in page
+
+
 def test_a_script_end_tag_in_the_name_cannot_end_the_block():
     name = "evil</script><script>alert(1)</script>&x"
     page = build(scan(name=name))

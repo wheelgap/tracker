@@ -93,6 +93,38 @@ class CampaignTests(unittest.TestCase):
         )
         return (self.site / "campaigns" / "musl-aarch64" / "index.html").read_text(encoding="utf-8")
 
+    def test_campaign_page_has_open_graph_and_twitter_card_tags(self):
+        page = self.built_page()
+
+        def meta(prefix, key):
+            match = re.search(rf'<meta {prefix}="{key}" content="([^"]*)">', page)
+            self.assertIsNotNone(match, key)
+            return match.group(1)
+
+        self.assertEqual(meta("property", "og:type"), "website")
+        self.assertEqual(meta("property", "og:title"), "musllinux aarch64 wheels for the top 500")
+        self.assertEqual(
+            meta("property", "og:url"), "https://wheelgap.github.io/tracker/campaigns/musl-aarch64/"
+        )
+        self.assertEqual(meta("property", "og:image"), "https://wheelgap.github.io/tracker/og.png")
+        self.assertEqual(meta("property", "og:image:width"), "1280")
+        self.assertEqual(meta("property", "og:image:height"), "640")
+        self.assertEqual(meta("name", "twitter:card"), "summary_large_image")
+
+    def test_campaigns_index_has_open_graph_and_twitter_card_tags(self):
+        self.write_inputs()
+        self.assertEqual(
+            build_campaigns.build(self.coverage, self.history, self.changes, self.config, self.site),
+            1,
+        )
+        page = (self.site / "campaigns" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('<meta property="og:type" content="website">', page)
+        self.assertIn('<meta property="og:title" content="Campaigns · wheelgap tracker">', page)
+        self.assertIn(
+            '<meta property="og:url" content="https://wheelgap.github.io/tracker/campaigns/">', page
+        )
+        self.assertIn('<meta name="twitter:card" content="summary_large_image">', page)
+
     def todo(self, page: str) -> str:
         return (
             page.split(">To do</h2>", 1)[1].split("Left out:", 1)[0].split(">Has an alternative</h2>", 1)[0]

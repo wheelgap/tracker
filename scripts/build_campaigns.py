@@ -810,6 +810,15 @@ def page(
   <meta http-equiv="Content-Security-Policy" content="{CSP}">
   <title>{e(title)}</title>
   <meta name="description" content="{e(summary)}">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="{e(title)}">
+  <meta property="og:description" content="{e(summary)}">
+  <meta property="og:url" content="{e(url)}">
+  <meta property="og:image" content="{e(BASE_URL)}og.png">
+  <meta property="og:image:width" content="1280">
+  <meta property="og:image:height" content="640">
+  <meta property="og:image:alt" content="wheelgap tracker: wheel coverage for the 5,000 most downloaded PyPI packages, across 42 platforms and Pythons.">
+  <meta name="twitter:card" content="summary_large_image">
   <link rel="canonical" href="{e(url)}">
   <link rel="stylesheet" href="../../style.css">
   <link rel="icon" href="../../favicon.svg" type="image/svg+xml">
@@ -899,6 +908,15 @@ def index_page(listings: list[dict], generated: str, wheelgap: str) -> str:
   <meta http-equiv="Content-Security-Policy" content="{CSP}">
   <title>Campaigns · wheelgap tracker</title>
   <meta name="description" content="{e(summary)}">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Campaigns · wheelgap tracker">
+  <meta property="og:description" content="{e(summary)}">
+  <meta property="og:url" content="{e(BASE_URL)}campaigns/">
+  <meta property="og:image" content="{e(BASE_URL)}og.png">
+  <meta property="og:image:width" content="1280">
+  <meta property="og:image:height" content="640">
+  <meta property="og:image:alt" content="wheelgap tracker: wheel coverage for the 5,000 most downloaded PyPI packages, across 42 platforms and Pythons.">
+  <meta name="twitter:card" content="summary_large_image">
   <link rel="canonical" href="{e(BASE_URL)}campaigns/">
   <link rel="stylesheet" href="../style.css">
   <link rel="icon" href="../favicon.svg" type="image/svg+xml">
