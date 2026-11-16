@@ -46,7 +46,7 @@ class Index(unittest.TestCase):
         self.assertIn("&lt;b&gt;1&lt;/b&gt;", page)
         self.assertNotIn("javascript:", page)
         self.assertIn("https://github.com/wheelgap/tracker/actions/runs/1", page)
-        self.assertIn("pip only, for now", page)
+        self.assertIn("Use pip for this, not uv", page)
         self.assertNotIn("unsafe-best-match", page)
         project = (site / "wheels/simple/tiktoken/index.html").read_text()
         self.assertIn('data-requires-python="&quot;&gt;&lt;x"', project)

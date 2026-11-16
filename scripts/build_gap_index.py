@@ -108,7 +108,7 @@ def human_page(by_project: dict[str, list[dict]]) -> str:
         if rows
         else '        <p class="note">No wheels published yet.</p>\n'
     )
-    summary = "Wheels PyPI is missing for Windows on ARM and new Pythons, built twice from the sdist and published only when both builds match."
+    summary = "Windows on ARM wheels that PyPI doesn't have yet, for Python 3.14. Each one is built twice and only goes up if both builds match."
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -125,31 +125,32 @@ def human_page(by_project: dict[str, list[dict]]) -> str:
   <header class="wrap">
     <p class="eyebrow"><a href="../">wheelgap tracker</a></p>
     <h1>Gap wheels</h1>
-    <p class="lede">Wheels PyPI doesn't have yet, for popular packages on platforms people are moving to. Without one, <code>pip install</code> compiles the package, and often fails. {count} wheel{'' if count == 1 else 's'} so far.</p>
+    <p class="lede">Some popular Python packages don't have a wheel on PyPI for Windows on ARM yet, mostly on Python 3.14. When that happens pip tries to build them from source, which needs Rust or a C compiler and often fails. These are the missing wheels. {count} so far.</p>
   </header>
   <main class="wrap">
     <section>
-      <h2>Use it</h2>
-      <p>Add the index next to PyPI. pip looks at both and takes a wheel from here where it fits your platform and PyPI has none:</p>
+      <h2>How to use it</h2>
+      <p>Add this index next to PyPI:</p>
       <pre><code>pip install --extra-index-url {e(INDEX_URL)} PACKAGE</code></pre>
-      <p>Each wheel is for one release. If PyPI has a newer release with no wheel for your platform, pip builds that one from source; add <code>--prefer-binary</code> to take the wheel here instead.</p>
-      <p>pip only, for now: uv ranks an extra index above PyPI and, for a version found here, would see only this one Windows wheel and none of PyPI's files.</p>
+      <p>pip still gets everything else from PyPI. It only takes a wheel from here when PyPI doesn't have one for your machine.</p>
+      <p>Each wheel is for one release. If a newer release comes out without a wheel, pip will try to build that one instead. Add <code>--prefer-binary</code> to keep using the wheel here.</p>
+      <p>Use pip for this, not uv. With an extra index uv takes every version of a package from the first index it finds it on, so it would miss PyPI's files.</p>
     </section>
     <section>
-      <h2>What is checked</h2>
+      <h2>How they're made</h2>
       <ul>
-        <li>It is built from the sdist PyPI publishes for that release (its sha256 is checked against PyPI's). Build tools come from PyPI too, and a build may download more (Rust crates, for example).</li>
-        <li>It is built <strong>twice</strong>, in two separate GitHub Actions runs, and published only when both builds are byte-identical. A build that isn't reproducible, or that something changed in one run only, is never published.</li>
-        <li>It carries exactly one tag, the Python and platform it was built and tested on, and every DLL its extension modules import is either beside them in the wheel or one every Windows machine with that Python has.</li>
-        <li>It is installed into a fresh environment on a fresh runner of its platform and imported; on free-threaded Python the GIL must stay off. That checks the wheel works; it isn't a security check.</li>
-        <li>The index carries each file's sha256, which pip checks. Each file has an attestation that the tracker's gap-wheels workflow published it: <code>gh attestation verify FILE.whl -R wheelgap/tracker</code>.</li>
-        <li>Every published wheel, with its sdist's sha256 and links to both build runs, is in <a href="../data/gap-wheels.json">gap-wheels.json</a>.</li>
+        <li>Built from the source file PyPI has for that release. Its hash is checked against PyPI's. Build tools come from PyPI too.</li>
+        <li>Built twice, in two separate GitHub Actions runs. It only goes up if the two builds come out byte for byte the same.</li>
+        <li>Tagged for the one Python and platform it was built and tested on, nothing wider. It can't rely on a DLL your machine might not have.</li>
+        <li>Installed and imported on a fresh machine before it goes up. On free-threaded Python the GIL has to stay off. This checks that it works, it's not a security check.</li>
+        <li>pip checks each file's hash when it downloads it. You can also check where a file came from with <code>gh attestation verify FILE.whl -R wheelgap/tracker</code>.</li>
+        <li>Every wheel, its source hash and both of its build runs are listed in <a href="../data/gap-wheels.json">gap-wheels.json</a>.</li>
       </ul>
-      <p>What it can't promise: a wheel is exactly as trustworthy as the sdist it was built from, since building the package yourself runs the same code. Only releases whose PyPI metadata names an OSI-approved licence (or the PSF licence Python itself uses) are published, and for now only Windows wheels: a Linux wheel needs its libraries bundled and a manylinux or musllinux tag first.</p>
+      <p>One thing to know: a wheel here is only as safe as the source it was built from. Installing the package the normal way runs the same code. Only packages with an OSI-approved licence (or the PSF licence Python uses) go up. Windows only for now, Linux needs more work first.</p>
     </section>
     <section>
-      <h2>Maintainers</h2>
-      <p>These wheels stand in until your release ships its own; when it does, tell us in an issue and ours come down. If you'd rather we didn't publish wheels of your project at all, <a href="{e(OPT_OUT_URL)}">open an opt-out issue</a>: we take them down by hand, and the weekly batch keeps them out. Want the build that worked here? Each row links to both build runs.</p>
+      <h2>If it's your package</h2>
+      <p>These are meant as a stopgap until your release ships its own wheel. Once it does, open an issue and we'll take ours down. If you'd rather we didn't host any wheels for your project, <a href="{e(OPT_OUT_URL)}">open an opt-out issue</a> and they come down, and later batches skip it. Each row below links to both build runs if you want to see the build that worked.</p>
     </section>
     <section>
       <h2>Published wheels</h2>
