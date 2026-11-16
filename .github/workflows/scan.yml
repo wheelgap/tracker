@@ -97,8 +97,9 @@ jobs:
         # Extra data. A slow or unavailable index must still leave the night's scan publishable.
         continue-on-error: true
         timeout-minutes: 5
-        # wheelgap.pypi.extract_issues_url is new in 0.12.0: use WHEELGAP_INSTALL here once it reaches 0.12.0.
-        run: uv run --no-project --with "wheelgap==0.12.0" python scripts/scan_issues.py data/coverage.json
+        # wheelgap.pypi.extract_issues_url is new in 0.12.0, and 0.13.0 skips a URL it can't parse (#440): use
+        # WHEELGAP_INSTALL here once it reaches 0.13.0.
+        run: uv run --no-project --with "wheelgap==0.13.0" python scripts/scan_issues.py data/coverage.json
       - name: Update history
         run: python3 scripts/update_history.py data/coverage.json data/history.json
       - name: Record the wheels gained and lost

@@ -6,7 +6,7 @@ import { loadPyodide } from "https://cdn.jsdelivr.net/pyodide/v314.0.8/full/pyod
 import { rawUrl } from "./check-logic.mjs";
 
 // The wheelgap release the page runs; tests/test_check_driver.py tests driver.py against the same one.
-export const WHEELGAP = "wheelgap==0.12.0";
+export const WHEELGAP = "wheelgap==0.13.0";
 const MAX_FILE = 25 * 1024 * 1024;
 const MAX_FIX_LOOKUPS = 80;
 
