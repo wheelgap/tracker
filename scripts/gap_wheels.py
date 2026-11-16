@@ -661,7 +661,7 @@ SYSTEM_DLLS = frozenset({
     "oleaut32.dll", "ws2_32.dll", "mswsock.dll", "bcrypt.dll", "bcryptprimitives.dll", "ncrypt.dll", "crypt32.dll",
     "secur32.dll", "sspicli.dll", "userenv.dll", "iphlpapi.dll", "dnsapi.dll", "dbghelp.dll", "psapi.dll",
     "version.dll", "winmm.dll", "rpcrt4.dll", "comctl32.dll", "comdlg32.dll", "setupapi.dll", "cfgmgr32.dll",
-    "powrprof.dll", "netapi32.dll", "wldap32.dll", "winhttp.dll", "wininet.dll", "normaliz.dll", "msvcrt.dll",
+    "powrprof.dll", "pdh.dll", "netapi32.dll", "wldap32.dll", "winhttp.dll", "wininet.dll", "normaliz.dll", "msvcrt.dll",
     "imm32.dll", "propsys.dll", "dwmapi.dll", "uxtheme.dll", "opengl32.dll", "d3d11.dll", "dxgi.dll",
 })  # fmt: skip
 SYSTEM_DLL = re.compile(r"api-ms-win-[a-z0-9-]+\.dll|ext-ms-win-[a-z0-9-]+\.dll|python3[0-9]{1,2}t?\.dll", re.ASCII)
@@ -676,7 +676,23 @@ OSI = frozenset(s.lower() for s in (
     "Unlicense", "W3C", "Zlib", "ZPL-2.0", "ZPL-2.1",
     # Deprecated SPDX ids still common on PyPI ("GPL-2.0+" is GPL-2.0-or-later).
     "AGPL-3.0", "GPL-2.0", "GPL-3.0", "LGPL-2.0", "LGPL-2.1", "LGPL-3.0",
+    # Not on SPDX's OSI list, but the licence CPython itself is released under (OSI-approved as Python-2.0).
+    "PSF-2.0",
 ))  # fmt: skip
+# The legacy free-text `license` field is read only when it's one line that is an SPDX expression or exactly one of
+# these unambiguous names; a pasted licence text or anything else is refused rather than guessed at.
+LICENCE_NAMES = {
+    "mit license": "MIT",
+    "the mit license": "MIT",
+    "apache license 2.0": "Apache-2.0",
+    "apache license, version 2.0": "Apache-2.0",
+    "apache software license 2.0": "Apache-2.0",
+    "apache 2.0": "Apache-2.0",
+    "bsd 3-clause license": "BSD-3-Clause",
+    "bsd 2-clause license": "BSD-2-Clause",
+    "mozilla public license 2.0": "MPL-2.0",
+    "isc license": "ISC",
+}
 ASSET = re.compile(r"[A-Za-z0-9._-]{1,200}\.whl", re.ASCII)  # release asset names: GitHub rewrites other characters
 RUN_URL = re.compile(r"https://github\.com/[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}/actions/runs/([0-9]{1,20})")
 MAX_WHEEL_BYTES = 500_000_000
@@ -744,8 +760,10 @@ def osi_expression(expr: str) -> bool:
 
 
 def licence(info: object) -> str | None:
-    """The release's licence when PyPI's metadata says it's OSI-approved: a PEP 639 SPDX expression whose every id is
-    on the list, or OSI-approved classifiers. None otherwise (free text isn't read: refuse rather than guess)."""
+    """The release's licence when PyPI's metadata says it's OSI-approved (or the PSF licence): a PEP 639 SPDX
+    expression whose every id is on the list, OSI-approved classifiers, or a one-line legacy `license` field that is
+    such an expression or an unambiguous name ("Apache License 2.0"). None otherwise: a pasted licence text isn't
+    read, so refuse rather than guess."""
     if not isinstance(info, dict):
         return None
     expr = info.get("license_expression")
@@ -755,7 +773,15 @@ def licence(info: object) -> str | None:
     classifiers = info.get("classifiers") if isinstance(info.get("classifiers"), list) else []
     osi = [c.removeprefix("License :: OSI Approved :: ") for c in classifiers
            if isinstance(c, str) and c.startswith("License :: OSI Approved :: ")]  # fmt: skip
-    return "; ".join(osi)[:200] if osi else None
+    if osi:
+        return "; ".join(osi)[:200]
+    text = info.get("license")
+    if not isinstance(text, str) or "\n" in text.strip() or len(text.strip()) > 100:
+        return None  # nothing, or a pasted licence text: not read
+    text = text.strip()
+    if (name := LICENCE_NAMES.get(re.sub(r"\s+", " ", text).lower())) is not None:
+        return name
+    return text if text and osi_expression(text) else None
 
 
 def pypi_info(name: str, version: str) -> dict | None:

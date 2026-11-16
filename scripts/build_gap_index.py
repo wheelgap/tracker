@@ -145,7 +145,7 @@ def human_page(by_project: dict[str, list[dict]]) -> str:
         <li>The index carries each file's sha256, which pip checks. Each file has an attestation that the tracker's gap-wheels workflow published it: <code>gh attestation verify FILE.whl -R wheelgap/tracker</code>.</li>
         <li>Every published wheel, with its sdist's sha256 and links to both build runs, is in <a href="../data/gap-wheels.json">gap-wheels.json</a>.</li>
       </ul>
-      <p>What it can't promise: a wheel is exactly as trustworthy as the sdist it was built from, since building the package yourself runs the same code. Only releases whose PyPI metadata names an OSI-approved licence are published, and for now only Windows wheels: a Linux wheel needs its libraries bundled and a manylinux or musllinux tag first.</p>
+      <p>What it can't promise: a wheel is exactly as trustworthy as the sdist it was built from, since building the package yourself runs the same code. Only releases whose PyPI metadata names an OSI-approved licence (or the PSF licence Python itself uses) are published, and for now only Windows wheels: a Linux wheel needs its libraries bundled and a manylinux or musllinux tag first.</p>
     </section>
     <section>
       <h2>Maintainers</h2>

@@ -527,7 +527,7 @@ class Stage(unittest.TestCase):
         self.assertIsNone(gap_wheels.licence({"license_expression": "MIT<script>"}))
         for not_osi in ("BUSL-1.1", "CC-BY-NC-4.0", "SSPL-1.0", "Elastic-2.0", "MIT AND BUSL-1.1", "CC0-1.0",
                         "MIT WITH BUSL-1.1", "Apache-2.0 WITH LicenseRef-NC", "AND", "MIT AND", "(MIT", "MIT)",
-                        "MIT OR OR Apache-2.0", "PSF-2.0"):  # fmt: skip
+                        "MIT OR OR Apache-2.0"):  # fmt: skip
             with self.subTest(not_osi):
                 self.assertIsNone(gap_wheels.licence({"license_expression": not_osi}))
         for osi in ("(MIT OR Apache-2.0) AND BSD-3-Clause", "GPL-2.0-or-later WITH Classpath-exception-2.0",
@@ -536,7 +536,15 @@ class Stage(unittest.TestCase):
                 self.assertEqual(gap_wheels.licence({"license_expression": osi}), osi)
         osi = {"classifiers": ["License :: OSI Approved :: BSD License", "Programming Language :: Python"]}
         self.assertEqual(gap_wheels.licence(osi), "BSD License")
-        self.assertIsNone(gap_wheels.licence({"license": "MIT", "classifiers": []}))  # free text isn't read
+        # The legacy field: one line, an SPDX expression or an unambiguous name.
+        self.assertEqual(gap_wheels.licence({"license": "BSD-3-Clause", "classifiers": []}), "BSD-3-Clause")
+        self.assertEqual(gap_wheels.licence({"license": " Apache License 2.0 "}), "Apache-2.0")
+        self.assertEqual(gap_wheels.licence({"license_expression": "MIT AND PSF-2.0"}), "MIT AND PSF-2.0")
+        for refused in ("MIT License\n\nCopyright (c) 2022 Someone\nPermission is hereby granted...",
+                        "Apache License\n  Version 2.0, January 2004", "BSD", "Proprietary", "",
+                        "see LICENSE", "MIT-ish", "x" * 150):  # fmt: skip
+            with self.subTest(refused):
+                self.assertIsNone(gap_wheels.licence({"license": refused}))
         self.assertIsNone(gap_wheels.licence("nope"))
 
     def test_unwrap_takes_only_the_verified_bytes(self):
@@ -759,7 +767,7 @@ class Dlls(unittest.TestCase):
                 self.assertIsNone(gap_wheels.pe_imports(bad))
 
     def test_a_wheel_needing_msvcp140_isnt_self_contained(self):
-        system = pe(["python314.dll", "VCRUNTIME140.dll", "api-ms-win-crt-runtime-l1-1-0.dll", "KERNEL32.dll"])
+        system = pe(["python314.dll", "VCRUNTIME140.dll", "api-ms-win-crt-runtime-l1-1-0.dll", "KERNEL32.dll", "pdh.dll"])
         self.assertEqual(gap_wheels.missing_dlls(zipped({"pkg/_ext.cp314-win_arm64.pyd": system})), [])
         cpp = pe(["python314.dll", "MSVCP140.dll", "vcomp140.dll"])
         self.assertEqual(gap_wheels.missing_dlls(zipped({"pkg/_ext.pyd": cpp})), ["msvcp140.dll", "vcomp140.dll"])
