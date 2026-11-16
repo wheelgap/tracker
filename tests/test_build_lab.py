@@ -366,3 +366,14 @@ class Census(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NewestPython(unittest.TestCase):
+    def test_315_on_linux_and_windows_x64_is_planned(self):
+        coverage = {
+            "targets": [{"label": "3.15 linux-x86_64"}, {"label": "3.15 win-amd64"}, {"label": "3.15 macos-arm64"}],
+            "packages": [pkg(1, "pyyaml", "6.0.3", ["source", "source", "source"])],
+        }
+        planned = {(j["name"], j["target"], j["runner"]) for j in build_lab.plan(coverage, None, 10, "2026-11-16")}
+        self.assertEqual(planned, {("pyyaml", "3.15 linux-x86_64", "ubuntu-24.04"),
+                                   ("pyyaml", "3.15 win-amd64", "windows-2025")})  # fmt: skip

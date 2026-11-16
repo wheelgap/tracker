@@ -1,7 +1,7 @@
 name: Build lab
 
 # Weekly: for the most-downloaded packages whose current release has no wheel for Windows on ARM, free-threaded
-# Python or Alpine ARM, build the package from its PyPI sdist on that platform, as pip would, then install and import
+# Python, Alpine ARM, or Python 3.15 on Linux x86_64 or Windows x64, build the package from its PyPI sdist on that platform, as pip would, then install and import
 # it (and on free-threaded Python, check the GIL stays off). The results go to data/builds.json; nothing built is
 # kept. See scripts/build_lab.py.
 #
@@ -22,7 +22,7 @@ on:
     inputs:
       max:
         description: Most builds this run
-        default: "40"
+        default: "80"
       top:
         description: Only packages ranked this high (empty for all)
         default: ""
@@ -59,7 +59,7 @@ jobs:
           persist-credentials: false
       - id: plan
         env:
-          MAX: ${{ github.event_name == 'pull_request' && '8' || inputs.max || '40' }}
+          MAX: ${{ github.event_name == 'pull_request' && '8' || inputs.max || '80' }}
           TOP: ${{ inputs.top }}
           REFRESH: ${{ inputs.refresh && '--refresh' || '' }}
           ONLY: ${{ inputs.only }}

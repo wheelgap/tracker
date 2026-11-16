@@ -65,9 +65,18 @@ TARGETS: dict[str, dict[str, str]] = {
         "wheel": r"(?:musl)?linux[_0-9]*_aarch64",
         "image": "python:3.14-alpine@sha256:5862d971d1f0ae26b258cefa4e893556b1d3aba81bd2ff30888704ad378bab67",
     },
+    # The newest Python on the two most common platforms: a month after 3.15.0, hundreds of the top packages still
+    # have no wheel for it on either.
+    "3.15 linux-x86_64": {
+        "runner": "ubuntu-24.04",
+        "python": "3.15",
+        "platform": "linux-x86_64",
+        "wheel": r"(?:many)?linux[_0-9]*_x86_64",
+    },
+    "3.15 win-amd64": {"runner": "windows-2025", "python": "3.15", "platform": "win-amd64", "wheel": r"win_amd64"},
 }
 REFRESH_DAYS = 90  # a result for the same release is rebuilt after this long (toolchains and runners change)
-DEFAULT_MAX = 40
+DEFAULT_MAX = 80  # builds a week, shared in turn between the targets
 BUILD_TIMEOUT = 40 * 60
 INSTALL_TIMEOUT = 15 * 60
 IMPORT_TIMEOUT = 5 * 60

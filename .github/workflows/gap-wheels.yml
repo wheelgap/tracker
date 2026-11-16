@@ -8,6 +8,10 @@ name: Gap wheels (private)
 # scripts/gap_wheels.py.
 
 on:
+  schedule:
+    # Mondays: after Sunday's build lab has committed, and well clear of the nightly scan's commit (dispatch stops if
+    # main moves mid-batch).
+    - cron: "17 1 * * 1"
   workflow_dispatch:
     inputs:
       max:
