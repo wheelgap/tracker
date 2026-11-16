@@ -5,8 +5,9 @@
 Reads wheelgap/wheels' data/gap-wheels.json (scan.yml downloads it from wheelgap.github.io/wheels/data/) and writes
 <site>/wheels/simple/index.html and <site>/wheels/simple/<project>/index.html, a PEP 503 index linking each wheel on
 wheelgap/wheels' `gap-wheels` release with its sha256, so `--extra-index-url .../tracker/wheels/simple/` keeps
-working. <site>/wheels/index.html says where the wheels went. Without the JSON only that page is written and it exits
-1. Runs at publish time; nothing is committed. Plain HTML, no JavaScript, under the site's usual CSP.
+working, and copies the JSON to <site>/data/gap-wheels.json, its old address. <site>/wheels/index.html says where
+the wheels went. Without a usable JSON only that page is written and it exits 1. Runs at publish time; nothing is
+committed. Plain HTML, no JavaScript, under the site's usual CSP.
 """
 
 from __future__ import annotations
@@ -123,8 +124,10 @@ def build(index_path: Path, site: Path) -> int:
     except (OSError, ValueError) as exc:
         print(f"gap wheels: no index, {index_path} can't be read: {exc}", file=sys.stderr)
         return 1
-    wheels = data.get("wheels") if isinstance(data, dict) and isinstance(data.get("wheels"), list) else []
-    by_project = projects(wheels)
+    if not isinstance(data, dict) or not isinstance(data.get("wheels"), list):
+        print(f"gap wheels: no index, {index_path} has no wheels list", file=sys.stderr)
+        return 1
+    by_project = projects(data["wheels"])
     simple = site / "wheels" / "simple"
     simple.mkdir(parents=True, exist_ok=True)
     root_links = [f'<a href="{p}/">{p}</a>' for p in by_project]
@@ -134,8 +137,12 @@ def build(index_path: Path, site: Path) -> int:
         (simple / project / "index.html").write_text(
             simple_page(f"Links for {project}", project_links(files)), encoding="utf-8"
         )
+    # The transparency record stays at its old address too.
+    (site / "data").mkdir(exist_ok=True)
+    (site / "data" / "gap-wheels.json").write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     print(f"gap wheels: {sum(len(v) for v in by_project.values())} wheels of {len(by_project)} projects")
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(build(Path(sys.argv[1]), Path(sys.argv[2])))

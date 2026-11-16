@@ -498,7 +498,7 @@ def run_build(name: str, version: str, target: str, work: Path) -> dict | None:
 def _import_check(
     work: Path, env: dict, mode: str, ours: Path, modules: list[str], python: str = sys.executable
 ) -> tuple[int, dict | None, str] | None:
-    """Run IMPORT_CHECK in a fresh interpreter (`python`: wheelgap/wheels runs it in a fresh venv): (exit code, its
+    """Run IMPORT_CHECK in a fresh interpreter (`python`: gap_wheels runs it in a fresh venv): (exit code, its
     answer or None, stderr). A timeout is a failure; an exit without an answer and without an error (something
     called sys.exit(0) on import) is None: no answer."""
     try:

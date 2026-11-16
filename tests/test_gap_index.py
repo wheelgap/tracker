@@ -34,6 +34,8 @@ class Index(unittest.TestCase):
             page,
         )
         self.assertNotIn("wheelgap/tracker/releases", page)
+        record = json.loads((site / "data/gap-wheels.json").read_text())
+        self.assertEqual(len(record["wheels"]), 2)  # the transparency record keeps its old address
         self.assertIn('name="pypi:repository-version"', page)
 
     def test_entries_that_cant_be_linked_safely_are_left_out(self):
@@ -62,3 +64,11 @@ class Index(unittest.TestCase):
         (tmp / "gap-wheels.json").write_text("{not json")
         self.assertEqual(build_gap_index.build(tmp / "gap-wheels.json", tmp / "site"), 1)
         self.assertFalse((tmp / "site/wheels/simple").exists())
+
+    def test_no_wheels_list_writes_only_the_moved_page(self):
+        for body in ('{"schema": 1}', '{"wheels": {}}', "[]"):
+            tmp = Path(tempfile.mkdtemp())
+            (tmp / "gap-wheels.json").write_text(body)
+            self.assertEqual(build_gap_index.build(tmp / "gap-wheels.json", tmp / "site"), 1, body)
+            self.assertFalse((tmp / "site/wheels/simple").exists())
+            self.assertFalse((tmp / "site/data/gap-wheels.json").exists())
