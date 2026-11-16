@@ -151,6 +151,7 @@ jobs:
   install-test:
     # Installs and imports each staged wheel on a fresh runner of its target. This runs package code, so it gets a
     # read-only token and no secrets, and publish trusts its answers only to skip a wheel, never for which bytes.
+    # Don't add actions/cache (or a setup action's cache) here: package code could write entries main restores.
     needs: collect
     if: ${{ !cancelled() && needs.collect.result == 'success' && needs.collect.outputs.tests != '' && needs.collect.outputs.tests != '[]' }}
     strategy:

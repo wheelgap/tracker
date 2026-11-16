@@ -506,14 +506,32 @@ class Stage(unittest.TestCase):
         plus = verified(wheel="tiktoken-0.14.0+local-cp314-cp314-win_arm64.whl")
         self.assertIn("release asset", gap_wheels.stage_reason(plus, MIT, set()))
 
-    def test_a_compressed_tag_set_needs_every_platform_to_be_windows(self):
-        self.assertTrue(gap_wheels.platform_ok("x-1.0-cp314-cp314-win_arm64.whl"))
-        self.assertFalse(gap_wheels.platform_ok("x-1.0-cp314-cp314-win_arm64.linux_aarch64.whl"))
+    def test_only_the_targets_one_exact_tag(self):
+        self.assertTrue(gap_wheels.tag_ok("x-1.0-cp314-cp314-win_arm64.whl", "3.14 win-arm64"))
+        self.assertTrue(gap_wheels.tag_ok("x-1.0-cp314-cp314t-win_arm64.whl", "3.14t win-arm64"))
+        for wheel, target in (
+            ("x-1.0-cp314-cp314-win_arm64.win_amd64.whl", "3.14 win-arm64"),  # an ARM64 .pyd on x64
+            ("x-1.0-cp314-cp314-win_arm64.linux_aarch64.whl", "3.14 win-arm64"),
+            ("x-1.0-cp38-abi3-win_arm64.whl", "3.14 win-arm64"),  # other Pythons would take it untested
+            ("x-1.0-py3-none-win_arm64.whl", "3.14 win-arm64"),
+            ("x-1.0-cp314-cp314-win_arm64.whl", "3.14t win-arm64"),
+            ("x-1.0-cp314-cp314t-linux_x86_64.whl", "3.14t linux-x86_64"),
+            ("x-1.0-cp314-cp314-WIN_ARM64.whl", "3.14 win-arm64"),
+        ):
+            with self.subTest(wheel):
+                self.assertFalse(gap_wheels.tag_ok(wheel, target))
 
     def test_licence(self):
         self.assertEqual(gap_wheels.licence({"license_expression": "Apache-2.0 OR MIT"}), "Apache-2.0 OR MIT")
         self.assertIsNone(gap_wheels.licence({"license_expression": "LicenseRef-Proprietary"}))
         self.assertIsNone(gap_wheels.licence({"license_expression": "MIT<script>"}))
+        for not_osi in ("BUSL-1.1", "CC-BY-NC-4.0", "SSPL-1.0", "Elastic-2.0", "MIT AND BUSL-1.1", "CC0-1.0"):
+            with self.subTest(not_osi):
+                self.assertIsNone(gap_wheels.licence({"license_expression": not_osi}))
+        for osi in ("(MIT OR Apache-2.0) AND BSD-3-Clause", "GPL-2.0-or-later WITH Classpath-exception-2.0",
+                    "apache-2.0", "LGPL-2.1+"):  # fmt: skip
+            with self.subTest(osi):
+                self.assertEqual(gap_wheels.licence({"license_expression": osi}), osi)
         osi = {"classifiers": ["License :: OSI Approved :: BSD License", "Programming Language :: Python"]}
         self.assertEqual(gap_wheels.licence(osi), "BSD License")
         self.assertIsNone(gap_wheels.licence({"license": "MIT", "classifiers": []}))  # free text isn't read
@@ -540,6 +558,7 @@ class Stage(unittest.TestCase):
                 manifest=str(tmp / "m.json"), staged=str(tmp / "staged"), repo="wheelgap/tracker",
                 optout=str(tmp / "none"), summary=None, github_output=str(out))  # fmt: skip
             with mock.patch.object(gap_wheels, "pypi_info", return_value=MIT), \
+                 mock.patch.object(gap_wheels, "missing_dlls", return_value=[]), \
                  mock.patch.object(gap_wheels, "fetch_wheel", return_value=zipped({WIN: data})) as fetch:  # fmt: skip
                 gap_wheels.cmd_stage(args)
             fetch.assert_called_once_with("wheelgap/tracker", 11)  # build 1's run
@@ -564,6 +583,7 @@ class Stage(unittest.TestCase):
                 summary=None, github_output=None)  # fmt: skip
             archives = {11: zipped({WIN: b"forged"}), 12: zipped({WIN: data})}
             with mock.patch.object(gap_wheels, "pypi_info", return_value=MIT), \
+                 mock.patch.object(gap_wheels, "missing_dlls", return_value=[]), \
                  mock.patch.object(gap_wheels, "fetch_wheel", side_effect=lambda repo, rid: archives[rid]):  # fmt: skip
                 gap_wheels.cmd_stage(args)
             self.assertEqual((tmp / "staged" / WIN).read_bytes(), data)
@@ -684,6 +704,67 @@ class InstallAndImport(unittest.TestCase):
             bad = tiny_wheel(tmp / "bad", "raise RuntimeError('broken on import')\n")
             self.assertIsNone(gap_wheels.install_and_import(ok, "3.14 win-arm64", tmp / "w1"))
             self.assertEqual(gap_wheels.install_and_import(bad, "3.14 win-arm64", tmp / "w2"), "the top import check failed")
+
+
+def pe(dlls, delay=()):
+    """A minimal PE32+ file importing `dlls` (and delay-loading `delay`): what pe_imports reads, nothing more."""
+    raw, va, size = 0x200, 0x1000, 0x400
+    section = bytearray(size)
+    names_at = 0x200
+    imp_desc, delay_desc = 0, 0x100
+    for n, name in enumerate(dlls):
+        rva = va + names_at
+        section[names_at : names_at + len(name) + 1] = name.encode() + b"\0"
+        names_at += len(name) + 1
+        section[imp_desc + n * 20 + 12 : imp_desc + n * 20 + 16] = rva.to_bytes(4, "little")
+    for n, name in enumerate(delay):
+        rva = va + names_at
+        section[names_at : names_at + len(name) + 1] = name.encode() + b"\0"
+        names_at += len(name) + 1
+        section[delay_desc + n * 32 + 4 : delay_desc + n * 32 + 8] = rva.to_bytes(4, "little")
+    head = bytearray(raw)
+    head[0:2] = b"MZ"
+    head[0x3C:0x40] = (0x40).to_bytes(4, "little")
+    head[0x40:0x44] = b"PE\0\0"
+    head[0x46:0x48] = (1).to_bytes(2, "little")  # one section
+    head[0x54:0x56] = (240).to_bytes(2, "little")  # SizeOfOptionalHeader
+    opt = 0x58
+    head[opt : opt + 2] = (0x20B).to_bytes(2, "little")
+    dirs = opt + 112
+    head[dirs - 4 : dirs] = (16).to_bytes(4, "little")
+    if dlls:
+        head[dirs + 8 : dirs + 12] = (va + imp_desc).to_bytes(4, "little")
+    if delay:
+        head[dirs + 8 * 13 : dirs + 8 * 13 + 4] = (va + delay_desc).to_bytes(4, "little")
+    sec = opt + 240
+    head[sec : sec + 8] = b".rdata\0\0"
+    head[sec + 8 : sec + 12] = size.to_bytes(4, "little")
+    head[sec + 12 : sec + 16] = va.to_bytes(4, "little")
+    head[sec + 16 : sec + 20] = size.to_bytes(4, "little")
+    head[sec + 20 : sec + 24] = raw.to_bytes(4, "little")
+    return bytes(head + section)
+
+
+class Dlls(unittest.TestCase):
+    def test_reads_imports_and_delay_loads(self):
+        data = pe(["KERNEL32.dll", "python314.dll"], delay=["MSVCP140.dll"])
+        self.assertEqual(gap_wheels.pe_imports(data), {"kernel32.dll", "python314.dll", "msvcp140.dll"})
+
+    def test_garbage_and_truncated_files_are_unreadable(self):
+        good_pe = pe(["kernel32.dll"])
+        for bad in (b"", b"MZ", b"not a pe" * 100, good_pe[:0x150], good_pe[:0x210]):
+            with self.subTest(len(bad)):
+                self.assertIsNone(gap_wheels.pe_imports(bad))
+
+    def test_a_wheel_needing_msvcp140_isnt_self_contained(self):
+        system = pe(["python314.dll", "VCRUNTIME140.dll", "api-ms-win-crt-runtime-l1-1-0.dll", "KERNEL32.dll"])
+        self.assertEqual(gap_wheels.missing_dlls(zipped({"pkg/_ext.cp314-win_arm64.pyd": system})), [])
+        cpp = pe(["python314.dll", "MSVCP140.dll", "vcomp140.dll"])
+        self.assertEqual(gap_wheels.missing_dlls(zipped({"pkg/_ext.pyd": cpp})), ["msvcp140.dll", "vcomp140.dll"])
+        carried = zipped({"pkg/_ext.pyd": cpp, "pkg.libs/msvcp140.dll": system, "pkg.libs/vcomp140.dll": system})
+        self.assertEqual(gap_wheels.missing_dlls(carried), [])
+        self.assertIsNone(gap_wheels.missing_dlls(zipped({"pkg/_ext.pyd": b"MZ junk"})))
+        self.assertIsNone(gap_wheels.missing_dlls(b"not a zip"))
 
 
 if __name__ == "__main__":

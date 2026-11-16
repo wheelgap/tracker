@@ -642,9 +642,41 @@ def cmd_collect(args: argparse.Namespace) -> int:
 #   data/gap-wheels.json; the workflow attests the files, uploads them to the `gap-wheels` release and deploys the
 #   index the site builds from that file (scripts/build_gap_index.py).
 
-# Windows tags name exactly what a wheel runs on. A Linux wheel from `pip wheel` is tagged linux_* instead, which pip
-# installs on any Linux, glibc or musl and any version: those need auditwheel's manylinux/musllinux tag first.
-PUBLISH_PLATFORM = re.compile(r"win_(?:arm64|amd64)", re.ASCII)
+# The one tag a published wheel may carry for its target: the Python and platform its builds and install test ran on,
+# nothing wider. Not abi3 or py3-none (other Pythons would take it untested), not a compressed tag set (win_arm64.
+# win_amd64 would put an ARM64 .pyd on x64), and not Linux: `pip wheel` tags it linux_*, which pip installs on any
+# libc and version, so those need auditwheel's manylinux/musllinux tag first.
+PUBLISH_TAGS = {
+    "3.14 win-arm64": "cp314-cp314-win_arm64",
+    "3.14t win-arm64": "cp314-cp314t-win_arm64",
+    "3.15 win-amd64": "cp315-cp315-win_amd64",
+}
+# DLLs every Windows machine with that CPython has: the interpreter's, the VC++ runtime Python's installer ships
+# (vcruntime140 only, not msvcp140 or vcomp140), the Universal CRT and core system DLLs. An extension importing any
+# other DLL that the wheel doesn't carry works on GitHub's images (they have the full VC++ redistributable) and fails
+# on a user's machine with "DLL load failed", so it isn't published. Bundling (delvewheel) would change the bytes.
+SYSTEM_DLLS = frozenset({
+    "python3.dll", "vcruntime140.dll", "vcruntime140_1.dll", "ucrtbase.dll", "kernel32.dll", "kernelbase.dll",
+    "ntdll.dll", "user32.dll", "gdi32.dll", "advapi32.dll", "shell32.dll", "shlwapi.dll", "ole32.dll",
+    "oleaut32.dll", "ws2_32.dll", "mswsock.dll", "bcrypt.dll", "bcryptprimitives.dll", "ncrypt.dll", "crypt32.dll",
+    "secur32.dll", "sspicli.dll", "userenv.dll", "iphlpapi.dll", "dnsapi.dll", "dbghelp.dll", "psapi.dll",
+    "version.dll", "winmm.dll", "rpcrt4.dll", "comctl32.dll", "comdlg32.dll", "setupapi.dll", "cfgmgr32.dll",
+    "powrprof.dll", "netapi32.dll", "wldap32.dll", "winhttp.dll", "wininet.dll", "normaliz.dll", "msvcrt.dll",
+    "imm32.dll", "propsys.dll", "dwmapi.dll", "uxtheme.dll", "opengl32.dll", "d3d11.dll", "dxgi.dll",
+})  # fmt: skip
+SYSTEM_DLL = re.compile(r"api-ms-win-[a-z0-9-]+\.dll|ext-ms-win-[a-z0-9-]+\.dll|python3[0-9]{1,2}t?\.dll", re.ASCII)
+# OSI-approved licences by SPDX id (the common ones on PyPI); an expression passes only if every id is one of these.
+OSI = frozenset(s.lower() for s in (
+    "0BSD", "AFL-3.0", "AGPL-3.0-only", "AGPL-3.0-or-later", "Apache-1.1", "Apache-2.0", "APSL-2.0", "Artistic-2.0",
+    "BSD-1-Clause", "BSD-2-Clause", "BSD-2-Clause-Patent", "BSD-3-Clause", "BSL-1.0", "CDDL-1.0", "CECILL-2.1",
+    "ECL-2.0", "EFL-2.0", "EPL-1.0", "EPL-2.0", "EUPL-1.2", "GPL-2.0-only", "GPL-2.0-or-later", "GPL-3.0-only",
+    "GPL-3.0-or-later", "HPND", "ISC", "LGPL-2.0-only", "LGPL-2.0-or-later", "LGPL-2.1-only", "LGPL-2.1-or-later",
+    "LGPL-3.0-only", "LGPL-3.0-or-later", "LPL-1.02", "MIT", "MIT-0", "MPL-1.1", "MPL-2.0", "MS-PL", "MS-RL", "MulanPSL-2.0",
+    "NCSA", "OFL-1.1", "OSL-3.0", "PostgreSQL", "PSF-2.0", "Python-2.0", "UPL-1.0", "Unicode-3.0", "Unicode-DFS-2016",
+    "Unlicense", "W3C", "Zlib", "ZPL-2.0", "ZPL-2.1",
+    # Deprecated SPDX ids still common on PyPI ("GPL-2.0+" is GPL-2.0-or-later).
+    "AGPL-3.0", "GPL-2.0", "GPL-3.0", "LGPL-2.0", "LGPL-2.1", "LGPL-3.0",
+))  # fmt: skip
 ASSET = re.compile(r"[A-Za-z0-9._-]{1,200}\.whl", re.ASCII)  # release asset names: GitHub rewrites other characters
 RUN_URL = re.compile(r"https://github\.com/[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}/actions/runs/([0-9]{1,20})")
 MAX_WHEEL_BYTES = 500_000_000
@@ -653,16 +685,34 @@ RELEASE = "gap-wheels"
 INDEX_SCHEMA = 1
 
 
+def osi_expression(expr: str) -> bool:
+    """Every licence in an SPDX expression is OSI-approved (a WITH exception is fine; a LicenseRef never is)."""
+    tokens = re.findall(r"[A-Za-z0-9.+-]+|[()]", expr)
+    if not tokens or "".join(tokens) != re.sub(r"\s+", "", expr):
+        return False
+    after_with = False
+    for t in tokens:
+        if t in ("(", ")") or t.upper() in ("AND", "OR"):
+            after_with = False
+            continue
+        if t.upper() == "WITH":
+            after_with = True
+            continue
+        if not after_with and t.lower().removesuffix("+") not in OSI:
+            return False
+        after_with = False
+    return True
+
+
 def licence(info: object) -> str | None:
-    """The release's licence when PyPI's metadata names one we may redistribute: a PEP 639 SPDX expression with no
-    LicenseRef, or OSI-approved classifiers. None otherwise (free text isn't read: refuse rather than guess)."""
+    """The release's licence when PyPI's metadata says it's OSI-approved: a PEP 639 SPDX expression whose every id is
+    on the list, or OSI-approved classifiers. None otherwise (free text isn't read: refuse rather than guess)."""
     if not isinstance(info, dict):
         return None
     expr = info.get("license_expression")
     if isinstance(expr, str) and expr.strip():
         expr = expr.strip()
-        ok = re.fullmatch(r"[A-Za-z0-9.+ ()-]{1,200}", expr, re.ASCII) and "licenseref" not in expr.lower()
-        return expr if ok else None
+        return expr if len(expr) <= 200 and osi_expression(expr) else None
     classifiers = info.get("classifiers") if isinstance(info.get("classifiers"), list) else []
     osi = [c.removeprefix("License :: OSI Approved :: ") for c in classifiers
            if isinstance(c, str) and c.startswith("License :: OSI Approved :: ")]  # fmt: skip
@@ -679,9 +729,95 @@ def pypi_info(name: str, version: str) -> dict | None:
     return data.get("info") if isinstance(data, dict) and isinstance(data.get("info"), dict) else None
 
 
-def platform_ok(wheel: str) -> bool:
-    platforms = wheel[: -len(".whl")].split("-")[-1].split(".")
-    return all(PUBLISH_PLATFORM.fullmatch(p) for p in platforms)
+def tag_ok(wheel: str, target: str) -> bool:
+    """The wheel carries exactly its target's one publishable tag."""
+    tag = PUBLISH_TAGS.get(target)
+    return tag is not None and "-".join(wheel[: -len(".whl")].split("-")[-3:]) == tag
+
+
+def pe_imports(data: bytes) -> set[str] | None:
+    """The DLLs a PE file (.pyd/.dll) imports, normal and delay-loaded, lowercased; None if it can't be read. Reads
+    untrusted bytes, so every offset is bounds-checked and anything odd is None (the wheel isn't published)."""
+
+    def u16(o: int) -> int:
+        if o < 0 or o + 2 > len(data):
+            raise ValueError
+        return int.from_bytes(data[o : o + 2], "little")
+
+    def u32(o: int) -> int:
+        if o < 0 or o + 4 > len(data):
+            raise ValueError
+        return int.from_bytes(data[o : o + 4], "little")
+
+    try:
+        if data[:2] != b"MZ":
+            return None
+        pe = u32(0x3C)
+        if data[pe : pe + 4] != b"PE\0\0":
+            return None
+        sections, opt_size = u16(pe + 6), u16(pe + 20)
+        opt = pe + 24
+        magic = u16(opt)
+        if magic not in (0x10B, 0x20B):
+            return None
+        dirs = opt + (96 if magic == 0x10B else 112)
+        count = u32(dirs - 4)
+        table = opt + opt_size
+        spans = [(u32(table + 40 * i + 12), max(u32(table + 40 * i + 8), u32(table + 40 * i + 16)),
+                  u32(table + 40 * i + 20)) for i in range(min(sections, 96))]  # fmt: skip
+
+        def offset(rva: int) -> int:
+            for va, size, raw in spans:
+                if va <= rva < va + size:
+                    return raw + rva - va
+            raise ValueError
+
+        def name_at(rva: int) -> str:
+            o = offset(rva)
+            end = data.find(b"\0", o, o + 256)
+            if end < 0:
+                raise ValueError
+            return data[o:end].decode("ascii").lower()
+
+        names: set[str] = set()
+        for index, step, name_field in ((1, 20, 12), (13, 32, 4)):  # import table; delay-load (name RVA at +4)
+            if index >= count:
+                continue
+            rva = u32(dirs + 8 * index)
+            if not rva:
+                continue
+            o = offset(rva)
+            for n in range(4096):
+                entry = data[o + n * step : o + (n + 1) * step]
+                if len(entry) < step:
+                    raise ValueError
+                if not any(entry):
+                    break
+                names.add(name_at(u32(o + n * step + name_field)))
+            else:
+                raise ValueError
+        return names
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
+def missing_dlls(wheel: bytes) -> list[str] | None:
+    """The DLLs the wheel's .pyd/.dll files import that a user's machine may not have and the wheel doesn't carry
+    (empty: self-contained), or None if a file can't be read."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(wheel)) as z:
+            binaries = [i for i in z.infolist() if i.filename.lower().endswith((".pyd", ".dll"))]
+            carried = {i.filename.rsplit("/", 1)[-1].lower() for i in binaries}
+            needed: set[str] = set()
+            for info in binaries[:500]:
+                data = bounded(z, info.filename, 200_000_000)
+                imports = pe_imports(data) if data is not None else None
+                if imports is None:
+                    return None
+                needed |= imports
+    except (zipfile.BadZipFile, KeyError, zlib.error, EOFError, RuntimeError, NotImplementedError, OSError):
+        return None
+    return sorted(n for n in needed if n not in carried and n not in SYSTEM_DLLS and not SYSTEM_DLL.fullmatch(n))
 
 
 def unwrap_wheel(archive: bytes, filename: str, digest: str) -> bytes | None:
@@ -718,8 +854,8 @@ def stage_reason(wheel: dict, info: dict | None, optout: set[str]) -> str | None
     """Why a verified wheel isn't staged (None: stage it)."""
     if not ASSET.fullmatch(wheel["wheel"]):
         return "its filename can't be a release asset name"
-    if not platform_ok(wheel["wheel"]):
-        return "not a Windows wheel (a linux_* wheel needs auditwheel first)"
+    if not tag_ok(wheel["wheel"], wheel["target"]):
+        return f"not tagged exactly {PUBLISH_TAGS.get(wheel['target'], 'a publishable tag')} (a linux_* wheel needs auditwheel first)"
     if build_lab.canonical(wheel["name"]) in optout:
         return "the project opted out"
     if info is None:
@@ -749,6 +885,10 @@ def cmd_stage(args: argparse.Namespace) -> int:
                     break
             if data is None:
                 reason = "no build run kept a wheel with the verified sha256"
+            elif (missing := missing_dlls(data)) is None:
+                reason = "couldn't read its extension modules' imports"
+            elif missing:
+                reason = f"needs DLLs a user's machine may not have: {', '.join(missing[:5])}"
         lines.append(f"| {wheel['name']} | {wheel['version']} | {wheel['target']} | {reason or 'staged'} |")
         if reason is not None:
             continue
@@ -819,7 +959,10 @@ def cmd_install_test(args: argparse.Namespace) -> int:
         if w["target"] != args.target:
             continue
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            why = install_and_import(Path(args.staged) / w["wheel"], args.target, Path(tmp))
+            try:
+                why = install_and_import(Path(args.staged) / w["wheel"], args.target, Path(tmp))
+            except Exception as e:  # noqa: BLE001  (one bad wheel fails itself, not its target's whole test)
+                why = f"the test itself failed ({type(e).__name__})"
         print(f"{w['wheel']}: {why or 'ok'}")
         tested[w["wheel"]] = why is None
     Path(args.out).write_text(json.dumps({"target": args.target, "tested": tested}) + "\n", encoding="utf-8")
@@ -829,7 +972,8 @@ def cmd_install_test(args: argparse.Namespace) -> int:
 def read_tested(folder: Path) -> dict[str, dict[str, bool]]:
     """By target: {wheel: passed} from the untrusted install-test artifacts (each tested-*/tested.json)."""
     out: dict[str, dict[str, bool]] = {}
-    for path in sorted(folder.glob("tested-*/tested.json")) if folder.is_dir() else []:
+    paths = [*folder.glob("tested-*/tested.json"), *folder.glob("tested.json")] if folder.is_dir() else []
+    for path in sorted(paths):
         if path.is_symlink() or path.stat().st_size > MAX_TESTED_BYTES:
             continue
         try:
@@ -875,7 +1019,7 @@ def trusted_staged(text: str) -> list[dict]:
     if not isinstance(staged, list) or not all(
         isinstance(w, dict) and set(w) == keys and isinstance(w["wheel"], str) and ASSET.fullmatch(w["wheel"])
         and isinstance(w["sha256"], str) and SHA256.fullmatch(w["sha256"]) and w["target"] in build_lab.TARGETS
-        and platform_ok(w["wheel"])
+        and tag_ok(w["wheel"], w["target"])
         for w in staged
     ):
         raise SystemExit("gap_wheels: --staged-json isn't what stage writes")

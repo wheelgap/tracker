@@ -130,25 +130,26 @@ def human_page(by_project: dict[str, list[dict]]) -> str:
   <main class="wrap">
     <section>
       <h2>Use it</h2>
-      <p>Add the index next to PyPI. pip takes a wheel from here only where PyPI has none for your platform:</p>
+      <p>Add the index next to PyPI. pip looks at both and takes a wheel from here where it fits your platform and PyPI has none:</p>
       <pre><code>pip install --extra-index-url {e(INDEX_URL)} PACKAGE</code></pre>
-      <p>With uv, let it compare both indexes (its default takes every version of a package from the first index that has it, and this one has only a few):</p>
-      <pre><code>uv pip install --extra-index-url {e(INDEX_URL)} --index-strategy unsafe-best-match PACKAGE</code></pre>
+      <p>Each wheel is for one release. If PyPI has a newer release with no wheel for your platform, pip builds that one from source; add <code>--prefer-binary</code> to take the wheel here instead.</p>
+      <p>pip only, for now: uv ranks an extra index above PyPI and, for a version found here, would see only this one Windows wheel and none of PyPI's files.</p>
     </section>
     <section>
-      <h2>Why you can trust a wheel here</h2>
+      <h2>What is checked</h2>
       <ul>
-        <li>It is built from the sdist PyPI publishes for that release (its sha256 is checked against PyPI's), with no other source.</li>
-        <li>It is built <strong>twice</strong>, in two separate GitHub Actions runs, and published only when both builds are byte-identical. A build that tampered with its output would have to do it the same way twice.</li>
-        <li>It is installed into a fresh environment on a fresh runner and imported before it is published; on free-threaded Python the GIL must stay off.</li>
-        <li>The index carries each file's sha256, which pip checks, and every file has a build attestation: <code>gh attestation verify FILE.whl -R wheelgap/tracker</code>.</li>
+        <li>It is built from the sdist PyPI publishes for that release (its sha256 is checked against PyPI's). Build tools come from PyPI too, and a build may download more (Rust crates, for example).</li>
+        <li>It is built <strong>twice</strong>, in two separate GitHub Actions runs, and published only when both builds are byte-identical. A build that isn't reproducible, or that something changed in one run only, is never published.</li>
+        <li>It carries exactly one tag, the Python and platform it was built and tested on, and every DLL its extension modules load is either in the wheel or one every Windows machine with that Python has.</li>
+        <li>It is installed into a fresh environment on a fresh runner of its platform and imported; on free-threaded Python the GIL must stay off. That checks the wheel works; it isn't a security check.</li>
+        <li>The index carries each file's sha256, which pip checks. Each file has an attestation that the tracker's gap-wheels workflow published it: <code>gh attestation verify FILE.whl -R wheelgap/tracker</code>.</li>
         <li>Every published wheel, with its sdist's sha256 and links to both build runs, is in <a href="../data/gap-wheels.json">gap-wheels.json</a>.</li>
       </ul>
-      <p>What it can't promise: a wheel is exactly as trustworthy as the sdist it was built from. Building the package yourself runs the same code. Only packages whose PyPI metadata names an OSI-approved licence are published, and for now only Windows wheels: a Linux wheel needs its libraries bundled and a proper manylinux or musllinux tag first.</p>
+      <p>What it can't promise: a wheel is exactly as trustworthy as the sdist it was built from, since building the package yourself runs the same code. Only releases whose PyPI metadata names an OSI-approved licence are published, and for now only Windows wheels: a Linux wheel needs its libraries bundled and a manylinux or musllinux tag first.</p>
     </section>
     <section>
       <h2>Maintainers</h2>
-      <p>These wheels stand in until your release ships its own. Once it does, pip prefers yours. If you'd rather we didn't publish wheels of your project, <a href="{e(OPT_OUT_URL)}">open an opt-out issue</a> and they come down within a day. Want the build that worked here? Each row links to both build runs.</p>
+      <p>These wheels stand in until your release ships its own; when it does, tell us in an issue and ours come down. If you'd rather we didn't publish wheels of your project at all, <a href="{e(OPT_OUT_URL)}">open an opt-out issue</a>: we take them down by hand, and the weekly batch keeps them out. Want the build that worked here? Each row links to both build runs.</p>
     </section>
     <section>
       <h2>Published wheels</h2>
