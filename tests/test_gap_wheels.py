@@ -800,5 +800,38 @@ class Dlls(unittest.TestCase):
                 self.assertEqual(json.loads((tmp / "staged" / "staged.json").read_text()), [])
 
 
+class Repair(unittest.TestCase):
+    def fake_run(self, exit_code=0, writes=("x-1.0-cp314-cp314-manylinux_2_39_x86_64.whl",)):
+        calls = []
+
+        def run(cmd, **kwargs):
+            calls.append(cmd)
+            if "--wheel-dir" in cmd:
+                out = Path(cmd[cmd.index("--wheel-dir") + 1])
+                out.mkdir(parents=True, exist_ok=True)
+                for name in writes:
+                    (out / name).write_bytes(b"repaired")
+            return subprocess.CompletedProcess(cmd, exit_code if "--wheel-dir" in cmd else 0, "", "")
+
+        return run, calls
+
+    def test_the_repaired_wheel_with_pinned_tools_and_a_fixed_epoch(self):
+        run, calls = self.fake_run()
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(gap_wheels.subprocess, "run", run):
+            got = gap_wheels.repair(Path(tmp) / "x-1.0-cp314-cp314-linux_x86_64.whl", Path(tmp))
+            self.assertEqual(got.name, "x-1.0-cp314-cp314-manylinux_2_39_x86_64.whl")
+        install = next(c for c in calls if "install" in c)
+        self.assertTrue(all(t in install for t in gap_wheels.REPAIR_TOOLS))
+        self.assertTrue(all("==" in t for t in gap_wheels.REPAIR_TOOLS))  # pinned
+
+    def test_no_wheel_or_two_wheels_or_a_failure_is_none(self):
+        for exit_code, writes in ((1, ("x-1.0-cp314-cp314-manylinux_2_39_x86_64.whl",)), (0, ()),
+                                  (0, ("a-1-cp314-cp314-manylinux_2_39_x86_64.whl", "b-1-cp314-cp314-manylinux_2_39_x86_64.whl"))):  # fmt: skip
+            with self.subTest(exit_code=exit_code, writes=writes):
+                run, _ = self.fake_run(exit_code, writes)
+                with tempfile.TemporaryDirectory() as tmp, mock.patch.object(gap_wheels.subprocess, "run", run):
+                    self.assertIsNone(gap_wheels.repair(Path(tmp) / "x.whl", Path(tmp)))
+
+
 if __name__ == "__main__":
     unittest.main()

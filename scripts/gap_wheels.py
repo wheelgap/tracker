@@ -184,6 +184,40 @@ def wheel_members(wheel: Path) -> dict[str, str]:
         return {}
 
 
+# Pinned, and installed into a venv of their own (not the build's): auditwheel bundles a wheel's libraries and
+# patchelf rewrites their paths. SOURCE_DATE_EPOCH (build_env) fixes the repaired zip's timestamps.
+REPAIR_TOOLS = ("auditwheel==6.8.2", "patchelf==0.19.1.0")
+
+
+def repair(wheel: Path, work: Path) -> Path | None:
+    """`auditwheel repair` of a Linux wheel into WORK/repaired: the one wheel it writes, or None (said why)."""
+    tools = work / "repair-tools"
+    subprocess.run([sys.executable, "-m", "venv", str(tools)], check=True, timeout=INSTALL_TIMEOUT)
+    bin_dir = tools / "bin"
+    env = dict(build_env(), PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    i = subprocess.run([str(bin_dir / "python"), "-m", "pip", "install", "--no-cache-dir", "--only-binary", ":all:",
+                        *REPAIR_TOOLS], check=False, env=env, capture_output=True, text=True, errors="replace",
+                       timeout=INSTALL_TIMEOUT)  # fmt: skip
+    if i.returncode != 0:
+        print((i.stdout + i.stderr)[-3000:])
+        print("gap_wheels: couldn't install the repair tools", file=sys.stderr)
+        return None
+    out = work / "repaired"
+    try:
+        r = subprocess.run([str(bin_dir / "auditwheel"), "repair", "--wheel-dir", str(out), str(wheel)], check=False,
+                           env=env, capture_output=True, text=True, errors="replace",
+                           timeout=BUILD_TIMEOUT)  # fmt: skip
+    except subprocess.TimeoutExpired:
+        print("gap_wheels: auditwheel repair timed out", file=sys.stderr)
+        return None
+    print((r.stdout + r.stderr)[-4000:])
+    found = sorted(out.glob("*.whl")) if out.is_dir() else []
+    if r.returncode != 0 or len(found) != 1 or not WHEEL.fullmatch(found[0].name):
+        print(f"gap_wheels: auditwheel repair gave no single wheel (exit {r.returncode})", file=sys.stderr)
+        return None
+    return found[0]
+
+
 def run_build(
     name: str, version: str, attempt: int, work: Path, members: dict[str, str] | None = None, keep: Path | None = None
 ) -> dict:
@@ -219,6 +253,14 @@ def run_build(
     if len(wheels) != 1 or not WHEEL.fullmatch(wheels[0].name):
         print(f"gap_wheels: expected one wheel, found {len(wheels)}", file=sys.stderr)
         return fields
+    if sys.platform == "linux":
+        # pip wheel tags a Linux build linux_*, which pip installs on any libc: auditwheel bundles the libraries it
+        # needs and gives it the manylinux or musllinux tag it really meets. Before hashing, so both builds are
+        # compared as repaired.
+        repaired = repair(wheels[0], work)
+        if repaired is None:
+            return fields
+        wheels = [repaired]
     fields.update(wheel=wheels[0].name, sha256=sha256(wheels[0]))
     if keep is not None:  # uploaded as this run's `wheel` artifact; stage takes it only if its sha256 is verified
         keep.mkdir(parents=True, exist_ok=True)
