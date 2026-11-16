@@ -769,7 +769,7 @@ def licence(info: object) -> str | None:
     expr = info.get("license_expression")
     if isinstance(expr, str) and expr.strip():
         expr = expr.strip()
-        return expr if len(expr) <= 200 and osi_expression(expr) else None
+        return " ".join(expr.split()) if len(expr) <= 200 and osi_expression(expr) else None
     classifiers = info.get("classifiers") if isinstance(info.get("classifiers"), list) else []
     osi = [c.removeprefix("License :: OSI Approved :: ") for c in classifiers
            if isinstance(c, str) and c.startswith("License :: OSI Approved :: ")]  # fmt: skip
@@ -781,7 +781,7 @@ def licence(info: object) -> str | None:
     text = text.strip()
     if (name := LICENCE_NAMES.get(re.sub(r"\s+", " ", text).lower())) is not None:
         return name
-    return text if text and osi_expression(text) else None
+    return " ".join(text.split()) if osi_expression(text) else None
 
 
 def pypi_info(name: str, version: str) -> dict | None:

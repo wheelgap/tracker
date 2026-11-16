@@ -539,10 +539,14 @@ class Stage(unittest.TestCase):
         # The legacy field: one line, an SPDX expression or an unambiguous name.
         self.assertEqual(gap_wheels.licence({"license": "BSD-3-Clause", "classifiers": []}), "BSD-3-Clause")
         self.assertEqual(gap_wheels.licence({"license": " Apache License 2.0 "}), "Apache-2.0")
+        for name, spdx in gap_wheels.LICENCE_NAMES.items():
+            self.assertEqual(gap_wheels.licence({"license": name.upper()}), spdx)
+        self.assertEqual(gap_wheels.licence({"license": "MIT\tOR  Apache-2.0"}), "MIT OR Apache-2.0")
         self.assertEqual(gap_wheels.licence({"license_expression": "MIT AND PSF-2.0"}), "MIT AND PSF-2.0")
         for refused in ("MIT License\n\nCopyright (c) 2022 Someone\nPermission is hereby granted...",
                         "Apache License\n  Version 2.0, January 2004", "BSD", "Proprietary", "",
-                        "see LICENSE", "MIT-ish", "x" * 150):  # fmt: skip
+                        "see LICENSE", "MIT-ish", "x" * 150, "MIT License, no commercial use",
+                        "PSF-2.0 OR Proprietary", "MIT/Apache-2.0"):  # fmt: skip
             with self.subTest(refused):
                 self.assertIsNone(gap_wheels.licence({"license": refused}))
         self.assertIsNone(gap_wheels.licence("nope"))
