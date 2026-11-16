@@ -33,6 +33,7 @@ jobs:
     outputs:
       all: ${{ steps.plan.outputs.all }}
       since: ${{ steps.plan.outputs.since }}
+      batch: ${{ steps.plan.outputs.batch }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -42,6 +43,8 @@ jobs:
           MAX: ${{ inputs.max || '50' }}
           ONLY: ${{ inputs.only }}
         run: |
+          # The batch is fixed here, so re-running only a later job still finds this batch's build runs.
+          echo "batch=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
           echo "since=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           python3 scripts/gap_wheels.py plan data/builds.json --max "$MAX" ${ONLY:+--only "$ONLY"} --github-output "$GITHUB_OUTPUT"
 
@@ -49,7 +52,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.all != '[]'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 330 # it waits while 20 of the batch's builds are running
     permissions:
       actions: write # to start the build runs; this job runs only our own code
       contents: read
@@ -62,12 +65,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           PLAN: ${{ needs.plan.outputs.all }}
+          BATCH: ${{ needs.plan.outputs.batch }}
+          SINCE: ${{ needs.plan.outputs.since }}
         run: |
           printf '%s' "$PLAN" > "$RUNNER_TEMP/plan.json"
-          python3 scripts/gap_wheels.py dispatch --plan "$RUNNER_TEMP/plan.json" --batch "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          python3 scripts/gap_wheels.py dispatch --plan "$RUNNER_TEMP/plan.json" --batch "$BATCH" --repo "$GITHUB_REPOSITORY" \
+            --sha "$GITHUB_SHA" --since "$SINCE"
 
   collect:
     needs: [plan, dispatch]
+    # Also when dispatch stopped partway: the builds it started still get collected.
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.all != '[]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 300
     permissions:
@@ -82,9 +90,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PLAN: ${{ needs.plan.outputs.all }}
           SINCE: ${{ needs.plan.outputs.since }}
+          BATCH: ${{ needs.plan.outputs.batch }}
         run: |
           printf '%s' "$PLAN" > "$RUNNER_TEMP/plan.json"
-          python3 scripts/gap_wheels.py collect --plan "$RUNNER_TEMP/plan.json" --batch "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+          python3 scripts/gap_wheels.py collect --plan "$RUNNER_TEMP/plan.json" --batch "$BATCH" \
             --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --since "$SINCE" --results results --wait 270
       - name: Verify the pairs and write the manifest
         env:

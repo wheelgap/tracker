@@ -3,7 +3,8 @@ name: Gap wheel build
 # One build of one gap-wheels pair, started by gap-wheels.yml (`gap_wheels.py dispatch`). Each build gets a workflow
 # run of its own so that its artifact token, which the package's build code can read, can't write another build's
 # result: the coordinator takes a result only from the one run with that build's exact title. See
-# scripts/gap_wheels.py. Nothing here is published, and this run's token is read-only.
+# scripts/gap_wheels.py. Nothing here is published, and this run's token is read-only. Don't add actions/cache (or a
+# setup action's cache) here: build code can write cache entries other workflows on main would restore.
 run-name: gap-wheel ${{ inputs.batch }} ${{ inputs.name }} ${{ inputs.version }} ${{ inputs.target }} build ${{ inputs.attempt }}
 
 on:

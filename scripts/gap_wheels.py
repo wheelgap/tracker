@@ -401,19 +401,51 @@ def gh(args: list[str]) -> bytes:
 
 
 def cmd_dispatch(args: argparse.Namespace) -> int:
-    if not BATCH.fullmatch(args.batch):
-        raise SystemExit(f"gap_wheels: not a batch id: {args.batch!r}")
+    check_args(args)
     jobs = json.loads(Path(args.plan).read_text(encoding="utf-8"))
-    for job in jobs:
+    for n, job in enumerate(jobs):
+        # A commit on main mid-batch would start the rest at another commit, which collect rightly refuses: stop loudly.
+        if (tip := retry(lambda: gh(["api", f"repos/{args.repo}/commits/main", "--jq", ".sha"])).decode().strip()) != args.sha:
+            raise SystemExit(f"gap_wheels: main moved to {tip} after {n} of {len(jobs)} builds started; run the batch again")
+        # At most --parallel of this batch's builds at once, so the batch doesn't hold every runner the account has.
+        while sum(r.get("status") != "completed" for r in this_batch(retry(lambda: list_runs(args.repo, args.since)),
+                                                                      args.batch)) >= args.parallel:  # fmt: skip
+            time.sleep(60)
         spec = build_lab.TARGETS[job["target"]]  # the plan's own values, checked again: they become a run's inputs
         if not (build_lab.NAME.fullmatch(job["name"]) and build_lab.VERSION.fullmatch(job["version"])):
             raise SystemExit(f"gap_wheels: not a plan job: {job!r}")
         fields = {"batch": args.batch, "name": job["name"], "version": job["version"], "target": job["target"],
                   "attempt": str(job["attempt"]), "runner": spec["runner"], "python": spec["python"],
                   "image": spec.get("image", "")}  # fmt: skip
-        gh(["workflow", "run", BUILD_WORKFLOW, "--ref", "main", *[x for k, v in fields.items() for x in ("-f", f"{k}={v}")]])
-        print(f"started {title(args.batch, job)}")
+        command = ["workflow", "run", BUILD_WORKFLOW, "--repo", args.repo, "--ref", "main",
+                   *[x for k, v in fields.items() for x in ("-f", f"{k}={v}")]]  # fmt: skip
+        retry(lambda: gh(command))  # noqa: B023  (called at once)
+        print(f"started {title(args.batch, job)}", flush=True)
+        time.sleep(2)  # well under GitHub's limit on write requests
     return 0
+
+
+def retry[T](call: Callable[[], T], attempts: int = 4) -> T:
+    """`call`, retried with backoff on a failed gh command (GitHub's API has the odd 5xx and secondary rate limit)."""
+    for attempt in range(attempts):
+        try:
+            return call()
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            if attempt == attempts - 1:
+                raise
+            time.sleep(30 * (attempt + 1))
+    raise AssertionError("unreachable")
+
+
+def this_batch(runs: list[dict], batch: str) -> list[dict]:
+    prefix = f"gap-wheel {batch} "
+    return [r for r in runs if isinstance(r, dict) and str(r.get("display_title", "")).startswith(prefix)]
+
+
+def check_args(args: argparse.Namespace) -> None:
+    if not (BATCH.fullmatch(args.batch) and SINCE.fullmatch(args.since) and REPO.fullmatch(args.repo)
+            and SHA.fullmatch(args.sha)):  # fmt: skip
+        raise SystemExit("gap_wheels: bad --batch, --since, --repo or --sha")
 
 
 def pick_runs(jobs: list[dict], runs: list[dict], batch: str, sha: str, since: str) -> dict[tuple[str, int], dict | str]:
@@ -470,13 +502,11 @@ def fetch_result(repo: str, run: dict) -> bytes | None:
 def cmd_collect(args: argparse.Namespace) -> int:
     """Wait for the batch's build runs, then put each result where merge looks: RESULTS/result-ID-ATTEMPT/result.json,
     and RESULTS/runs.json: by "ID-ATTEMPT", the build run's URL."""
-    if not (BATCH.fullmatch(args.batch) and SINCE.fullmatch(args.since) and REPO.fullmatch(args.repo)
-            and SHA.fullmatch(args.sha)):  # fmt: skip
-        raise SystemExit("gap_wheels: bad --batch, --since, --repo or --sha")
+    check_args(args)
     jobs = json.loads(Path(args.plan).read_text(encoding="utf-8"))
     deadline = time.monotonic() + args.wait * 60
     while True:
-        picked = pick_runs(jobs, list_runs(args.repo, args.since), args.batch, args.sha, args.since)
+        picked = pick_runs(jobs, retry(lambda: list_runs(args.repo, args.since)), args.batch, args.sha, args.since)
         waiting = [k for k, v in picked.items() if v in ("no build run", "the build run hasn't finished")]
         print(f"{len(picked) - len(waiting)} of {len(picked)} builds done", file=sys.stderr)
         if not waiting or time.monotonic() > deadline:
@@ -489,7 +519,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
             print(f"build {pid}-{attempt}: {run}", file=sys.stderr)
             continue
         urls[f"{pid}-{attempt}"] = f"https://github.com/{args.repo}/actions/runs/{int(run['id'])}"
-        if (data := fetch_result(args.repo, run)) is not None:
+        if (data := retry(lambda run=run: fetch_result(args.repo, run))) is not None:
             (out / f"result-{pid}-{attempt}").mkdir(parents=True, exist_ok=True)
             (out / f"result-{pid}-{attempt}" / "result.json").write_bytes(data)
     out.mkdir(parents=True, exist_ok=True)
@@ -518,8 +548,9 @@ def main(argv: list[str] | None = None) -> int:
     m.add_argument("--summary")
     m.set_defaults(func=cmd_merge)
     d = sub.add_parser("dispatch")
-    d.add_argument("--plan", required=True)
-    d.add_argument("--batch", required=True)
+    for flag in ("--plan", "--batch", "--repo", "--sha", "--since"):
+        d.add_argument(flag, required=True)
+    d.add_argument("--parallel", type=int, default=20, help="most of this batch's builds running at once")
     d.set_defaults(func=cmd_dispatch)
     c = sub.add_parser("collect")
     for flag in ("--plan", "--batch", "--repo", "--sha", "--since", "--results"):

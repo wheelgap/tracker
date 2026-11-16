@@ -2,6 +2,7 @@
 
 import io
 import json
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -306,6 +307,64 @@ class Runs(unittest.TestCase):
             args = {"--batch": "99-1", "--since": "2026-11-16T02:00:00Z", "--repo": "o/r", "--sha": SHA, flag: value}
             with self.subTest(flag), self.assertRaises(SystemExit):
                 gap_wheels.main(["collect", "--plan", "x", "--results", "r", *[x for kv in args.items() for x in kv]])
+
+
+class Dispatch(unittest.TestCase):
+    def setUp(self):
+        self.jobs = gap_wheels.plan(BUILDS, 2)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.plan = Path(self.tmp.name) / "plan.json"
+        self.plan.write_text(json.dumps(self.jobs))
+        self.calls = []
+        sleep = mock.patch.object(gap_wheels.time, "sleep", lambda s: None)
+        sleep.start()
+        self.addCleanup(sleep.stop)
+
+    def run_dispatch(self, tips, runs=list):
+        def gh(args):
+            self.calls.append(args)
+            return (next(tips) + "\n").encode() if args[0] == "api" else b""
+
+        with mock.patch.object(gap_wheels, "gh", gh), mock.patch.object(gap_wheels, "list_runs", lambda r, s: runs()):
+            gap_wheels.main(["dispatch", "--plan", str(self.plan), "--batch", "99-1", "--repo", "o/r", "--sha", SHA,
+                             "--since", "2026-11-16T02:00:00Z", "--parallel", "2"])  # fmt: skip
+
+    def started(self):
+        return [c for c in self.calls if c[:2] == ["workflow", "run"]]
+
+    def test_starts_one_run_per_build_from_main_with_the_plans_values(self):
+        self.run_dispatch(iter([SHA] * 4))
+        started = self.started()
+        self.assertEqual(len(started), 4)
+        self.assertIn("main", started[0])
+        self.assertIn("target=3.14t win-arm64", started[0])
+        self.assertIn("batch=99-1", started[0])
+
+    def test_stops_loudly_when_main_moves(self):
+        with self.assertRaises(SystemExit) as raised:
+            self.run_dispatch(iter([SHA, SHA, "2" * 40]))
+        self.assertIn("after 2 of 4", str(raised.exception))
+        self.assertEqual(len(self.started()), 2)
+
+    def test_waits_while_the_batch_has_parallel_builds_running(self):
+        busy = [{"display_title": "gap-wheel 99-1 a 1 t build 1", "status": "in_progress"}] * 2
+        polls = iter([[], [], busy, busy, [], [], []])
+        self.run_dispatch(iter([SHA] * 4), runs=lambda: next(polls))
+        self.assertEqual(len(self.started()), 4)
+
+    def test_retry(self):
+        calls = iter([subprocess.CalledProcessError(1, "gh"), b"ok"])
+
+        def flaky():
+            value = next(calls)
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        self.assertEqual(gap_wheels.retry(flaky), b"ok")
+        with self.assertRaises(subprocess.CalledProcessError):
+            gap_wheels.retry(lambda: (_ for _ in ()).throw(subprocess.CalledProcessError(1, "gh")), attempts=2)
 
 
 if __name__ == "__main__":
