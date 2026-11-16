@@ -364,7 +364,6 @@ class Census(unittest.TestCase):
         self.assertTrue(build_lab.problems(dict(GOOD, log="https://evil.example"), JOB))  # a build can't set it
 
 
-
 class NewestPython(unittest.TestCase):
     def test_315_on_linux_and_windows_x64_is_planned(self):
         coverage = {
@@ -378,4 +377,3 @@ class NewestPython(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

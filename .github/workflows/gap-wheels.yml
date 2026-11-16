@@ -8,10 +8,13 @@ name: Gap wheels (private)
 # scripts/gap_wheels.py.
 
 on:
-  schedule:
-    # Mondays, after Sunday's build lab. Scheduled runs here often start hours late, so a batch can overlap the nightly
-    # scan's commit: dispatch then stops loudly and collect still verifies the builds already started.
-    - cron: "17 1 * * 1"
+  workflow_run:
+    # Weekly, right after Monday's nightly scan has committed and published (and after Sunday's build lab), so the
+    # batch has a day before main moves again; on other days the plan job does nothing. A commit mid-batch still
+    # stops dispatch loudly, and collect still verifies the builds already started.
+    workflows: ["Scan and publish"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       max:
@@ -44,13 +47,23 @@ jobs:
           persist-credentials: false
       - id: plan
         env:
-          MAX: ${{ inputs.max || '200' }} # every clean pair, so none is left out week after week
+          # A weekly batch takes 60 pairs (120 builds, a few hours at 20 at a time), starting further on each week
+          # (--rotate), so with more clean pairs than that none is left out week after week.
+          MAX: ${{ inputs.max || '60' }}
           ONLY: ${{ inputs.only }}
+          EVENT: ${{ github.event_name }}
+          SCAN: ${{ github.event.workflow_run.conclusion }}
         run: |
+          # After the nightly scan: only Monday's, and only when it succeeded. Other days plan nothing.
+          if [ "$EVENT" = workflow_run ] && { [ "$(date -u +%u)" != 1 ] || [ "$SCAN" != success ]; }; then
+            echo "all=[]" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          rotate=; [ "$EVENT" = workflow_run ] && rotate=--rotate
           # The batch is fixed here, so re-running only a later job still finds this batch's build runs.
           echo "batch=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
           echo "since=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-          python3 scripts/gap_wheels.py plan data/builds.json --max "$MAX" ${ONLY:+--only "$ONLY"} --github-output "$GITHUB_OUTPUT"
+          python3 scripts/gap_wheels.py plan data/builds.json --max "$MAX" $rotate ${ONLY:+--only "$ONLY"} --github-output "$GITHUB_OUTPUT"
 
   dispatch:
     needs: plan

@@ -447,5 +447,29 @@ class Dispatch(unittest.TestCase):
             gap_wheels.retry(lambda: (_ for _ in ()).throw(subprocess.CalledProcessError(1, "gh")), attempts=2)
 
 
+class Rotation(unittest.TestCase):
+    def test_a_capped_batch_reaches_every_pair_in_turn(self):
+        names = lambda start: [j["name"] for j in gap_wheels.plan(BUILDS, 1, start=start) if j["attempt"] == 1]
+        everyone = {p["name"] for p in gap_wheels.clean_pairs(BUILDS)}
+        self.assertEqual({n for week in range(len(everyone)) for n in names(week)}, everyone)
+        self.assertEqual(names(0), names(len(everyone)))  # wraps around
+
+    def test_members_too_big_to_list_still_leave_the_result(self):
+        def fake_run_build(name, version, attempt, work, members):
+            members.update({f"pkg/f{i}.py": "a" * 64 for i in range(gap_wheels.MAX_MEMBERS + 1)})
+            return {"sdist": None, "sdist_sha256": None, "wheel": None, "sha256": None, "installs": None}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "result.json"
+            with (
+                mock.patch.object(gap_wheels, "run_build", fake_run_build),
+                mock.patch.object(gap_wheels.build_lab, "interpreter_problem", lambda target: None),
+            ):
+                gap_wheels.main(["build", "--name", "tiktoken", "--version", "0.14.0", "--target", "3.14 win-arm64",
+                                 "--attempt", "1", "--runner", "windows-11-arm", "--out", str(out)])  # fmt: skip
+            self.assertEqual(json.loads(out.read_text())["name"], "tiktoken")
+            self.assertEqual(json.loads((Path(tmp) / "members.json").read_text()), {})
+
+
 if __name__ == "__main__":
     unittest.main()

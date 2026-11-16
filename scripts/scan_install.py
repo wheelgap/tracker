@@ -112,9 +112,11 @@ def scan(path: Path, top: int) -> int:
     data = json.loads(path.read_text(encoding="utf-8"))
     if data.get("schema") != 1:
         raise ValueError("expected coverage schema 1")
-    # The 3.14 lab targets only: a third Python (the lab's 3.15 targets) would be one more wheelgap call per package
-    # inside the same deadline, so fewer of the top 500 would be checked.
-    lab = {label for label in LAB_TARGETS if label.split()[0] in ("3.14", "3.14t")}
+    # Lab targets on the main targets' Python (and its free-threaded build) only: another Python, like the lab's 3.15
+    # targets, would be one more wheelgap call per package inside the same deadline, so fewer of the top 500 would be
+    # checked. Derived from MAIN_TARGETS, so moving them to a new Python moves the lab targets with them.
+    main_pythons = {label.split()[0] for label in MAIN_TARGETS}
+    lab = {label for label in LAB_TARGETS if label.split()[0].rstrip("t") in main_pythons}
     targets = [t for t in data["targets"] if t["label"] in lab or t["label"] in MAIN_TARGETS]
     if not targets:
         raise ValueError("no install coverage targets in the snapshot")

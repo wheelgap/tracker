@@ -88,10 +88,15 @@ def clean_pairs(builds: dict) -> list[dict]:
     return sorted(out, key=lambda p: (build_lab.canonical(p["name"]), p["target"]))
 
 
-def plan(builds: dict, limit: int, only: set[str] | None = None) -> list[dict]:
-    """Two build jobs per pair, at most `limit` pairs, each with the runner (and Docker image) of its target."""
+def plan(builds: dict, limit: int, only: set[str] | None = None, start: int = 0) -> list[dict]:
+    """Two build jobs per pair, at most `limit` pairs, each with the runner (and Docker image) of its target. `start`
+    rotates the (sorted) pairs first, so a weekly batch capped at `limit` reaches the end of the list too."""
     jobs = []
-    pairs = [p for p in clean_pairs(builds) if only is None or build_lab.canonical(p["name"]) in only][:limit]
+    pairs = [p for p in clean_pairs(builds) if only is None or build_lab.canonical(p["name"]) in only]
+    if pairs:
+        offset = start % len(pairs)
+        pairs = pairs[offset:] + pairs[:offset]
+    pairs = pairs[:limit]
     for i, pair in enumerate(pairs):
         spec = build_lab.TARGETS[pair["target"]]
         for attempt in (1, 2):
@@ -105,7 +110,9 @@ def plan(builds: dict, limit: int, only: set[str] | None = None) -> list[dict]:
 def cmd_plan(args: argparse.Namespace) -> int:
     builds = json.loads(Path(args.builds).read_text(encoding="utf-8"))
     only = {build_lab.canonical(n.strip()) for n in args.only.split(",") if n.strip()} if args.only else None
-    jobs = plan(builds, args.max, only)
+    # --rotate: start each ISO week `--max` pairs further on, so a capped weekly batch covers every pair in turn.
+    start = dt.date.today().isocalendar().week * args.max if args.rotate else 0
+    jobs = plan(builds, args.max, only, start)
     hosted = [j for j in jobs if "image" not in j]
     docker = [j for j in jobs if "image" in j]
     print(f"{len(jobs) // 2} pairs, {len(jobs)} builds", file=sys.stderr)
@@ -244,7 +251,10 @@ def cmd_build(args: argparse.Namespace) -> int:
               "attempt": args.attempt, "runner": args.runner, **fields}  # fmt: skip
     Path(args.out).write_text(json.dumps(result) + "\n", encoding="utf-8")
     # Beside the result, only to say which files differ when two builds don't agree; never part of a verdict.
-    Path(args.out).with_name("members.json").write_text(json.dumps(members, sort_keys=True) + "\n", encoding="utf-8")
+    text = json.dumps(members, sort_keys=True) + "\n"
+    if len(members) > MAX_MEMBERS or len(text) > MAX_MEMBERS_BYTES:
+        text = "{}\n"  # too big to list: no diff listing, but the result itself must still arrive
+    Path(args.out).with_name("members.json").write_text(text, encoding="utf-8")
     print(json.dumps(result, indent=1))
     return 0
 
@@ -615,6 +625,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("builds")
     p.add_argument("--max", type=int, default=100)
     p.add_argument("--only")
+    p.add_argument("--rotate", action="store_true", help="start further on each week (for the scheduled batch)")
     p.add_argument("--github-output")
     p.set_defaults(func=cmd_plan)
     b = sub.add_parser("build")
