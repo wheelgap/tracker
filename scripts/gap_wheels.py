@@ -257,8 +257,12 @@ def run_build(
         # pip wheel tags a Linux build linux_*, which pip installs on any libc: auditwheel bundles the libraries it
         # needs and gives it the manylinux or musllinux tag it really meets. Before hashing, so both builds are
         # compared as repaired.
+        # Logged for the reproducibility spike (#124): a pair that differs after repair but matched before points
+        # at auditwheel or patchelf, not the compiler.
+        print(f"gap_wheels: before repair: {wheels[0].name} sha256 {sha256(wheels[0])}")
         repaired = repair(wheels[0], work)
         if repaired is None:
+            print("gap_wheels: repair failed (the wheel built; auditwheel couldn't repair it)", file=sys.stderr)
             return fields
         wheels = [repaired]
     fields.update(wheel=wheels[0].name, sha256=sha256(wheels[0]))

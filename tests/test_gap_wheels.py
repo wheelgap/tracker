@@ -806,6 +806,8 @@ class Repair(unittest.TestCase):
 
         def run(cmd, **kwargs):
             calls.append(cmd)
+            if "env" in kwargs:
+                self.assertEqual(kwargs["env"]["SOURCE_DATE_EPOCH"], "1700000000")
             if "--wheel-dir" in cmd:
                 out = Path(cmd[cmd.index("--wheel-dir") + 1])
                 out.mkdir(parents=True, exist_ok=True)
