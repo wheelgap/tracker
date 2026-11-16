@@ -139,7 +139,8 @@ def check(root: str, lockfile: str, options_json: str) -> str:
     if path.name not in OFFLINE:
         return json.dumps({"error": f"{path.name} needs PyPI lookups", "kind": "needs-index"})
     try:
-        results, source = api._check_lockfile(path, targets, online=False, offline=True)
+        # 0.12.0 also returns the check rows; only the results and the source are used here.
+        results, source, *_ = api._check_lockfile(path, targets, online=False, offline=True)
     except (SourceError, ValueError, OSError) as e:  # ValueError: a lockfile that isn't valid TOML or JSON
         return json.dumps({"error": str(e).replace(f"{root}/", ""), "kind": "source"})
     _targets.clear()
