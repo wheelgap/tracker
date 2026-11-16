@@ -219,5 +219,94 @@ class Unpack(unittest.TestCase):
             self.assertEqual(gap_wheels.unpack(z, tmp / "dest").name, "ok-1.0")
 
 
+SHA = "1" * 40
+
+
+def build_run(job, batch="99-1", **over):
+    run = {"id": 7, "display_title": gap_wheels.title(batch, job), "event": "workflow_dispatch", "head_branch": "main",
+           "head_sha": SHA, "path": ".github/workflows/gap-wheel-build.yml", "created_at": "2026-11-16T02:00:05Z",
+           "status": "completed"}  # fmt: skip
+    run.update(over)
+    return run
+
+
+class Runs(unittest.TestCase):
+    def setUp(self):
+        self.jobs = gap_wheels.plan(BUILDS, 1, {"tiktoken"})
+        self.one = self.jobs[0]
+
+    def pick(self, runs):
+        return gap_wheels.pick_runs(self.jobs, runs, "99-1", SHA, "2026-11-16T02:00:00Z")[("0", 1)]
+
+    def test_title_matches_the_build_workflows_run_name(self):
+        workflow = (Path(__file__).parent.parent / ".github/workflows/gap-wheel-build.yml").read_text()
+        self.assertIn("run-name: gap-wheel ${{ inputs.batch }} ${{ inputs.name }} ${{ inputs.version }} "
+                      "${{ inputs.target }} build ${{ inputs.attempt }}", workflow)  # fmt: skip
+        self.assertEqual(gap_wheels.title("99-1", self.one), "gap-wheel 99-1 tiktoken 0.14.0 3.14 win-arm64 build 1")
+
+    def test_the_one_run_this_batch_started(self):
+        self.assertEqual(self.pick([build_run(self.one)])["id"], 7)
+
+    def test_a_run_another_job_made_doesnt_count(self):
+        for over in ({"event": "push"}, {"head_branch": "evil"}, {"head_sha": "2" * 40},
+                     {"path": ".github/workflows/other.yml"}, {"created_at": "2026-11-16T01:59:59Z"}):  # fmt: skip
+            with self.subTest(over):
+                self.assertEqual(self.pick([build_run(self.one, **over)]), "the build run isn't one this batch started")
+
+    def test_two_runs_with_one_title_both_lose(self):
+        self.assertEqual(self.pick([build_run(self.one), build_run(self.one, id=8)]),
+                         "more than one build run with its title")  # fmt: skip
+
+    def test_another_batch_or_attempt_isnt_this_one(self):
+        self.assertEqual(self.pick([build_run(self.one, batch="98-1"), build_run(self.jobs[1])]), "no build run")
+
+    def test_unfinished(self):
+        self.assertEqual(self.pick([build_run(self.one, status="in_progress")]), "the build run hasn't finished")
+
+    def test_fetch_result_reads_only_a_small_result_json(self):
+        def zipped(files):
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as z:
+                for name, data in files.items():
+                    z.writestr(name, data)
+            return buf.getvalue()
+
+        listing = json.dumps({"artifacts": [{"id": 5, "name": "result", "size_in_bytes": 300}]}).encode()
+        for archive, expected in ((zipped({"result.json": "{}"}), b"{}"), (zipped({"other.json": "{}"}), None),
+                                  (zipped({"result.json": "x" * 20_000}), None), (b"not a zip", None)):  # fmt: skip
+            with self.subTest(expected), mock.patch.object(gap_wheels, "gh", side_effect=[listing, archive]):
+                self.assertEqual(gap_wheels.fetch_result("o/r", {"id": 7}), expected)
+        two = json.dumps({"artifacts": [{"id": 5, "name": "result"}, {"id": 6, "name": "result"}]}).encode()
+        with mock.patch.object(gap_wheels, "gh", side_effect=[two]):
+            self.assertIsNone(gap_wheels.fetch_result("o/r", {"id": 7}))
+
+    def test_collect_writes_results_and_run_urls_for_merge(self):
+        runs = [build_run(job, id=10 + job["attempt"]) for job in self.jobs]
+        results = {11: good(self.jobs[0]), 12: good(self.jobs[1])}
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / "plan.json").write_text(json.dumps(self.jobs))
+            with (
+                mock.patch.object(gap_wheels, "list_runs", return_value=runs),
+                mock.patch.object(gap_wheels, "fetch_result", lambda repo, run: json.dumps(results[run["id"]]).encode()),
+            ):
+                gap_wheels.main(["collect", "--plan", str(tmp / "plan.json"), "--batch", "99-1", "--repo", "o/r",
+                                 "--sha", SHA, "--since", "2026-11-16T02:00:00Z", "--results", str(tmp / "r")])  # fmt: skip
+            self.assertEqual(json.loads((tmp / "r" / "runs.json").read_text()),
+                             {"0-1": "https://github.com/o/r/actions/runs/11",
+                              "0-2": "https://github.com/o/r/actions/runs/12"})  # fmt: skip
+            self.assertEqual(json.loads((tmp / "r" / "result-0-2" / "result.json").read_text()), results[12])
+            with mock.patch.object(gap_wheels, "pypi_sdists", lambda n, v: {"tiktoken-0.14.0.tar.gz": "a" * 64}):
+                gap_wheels.main(["merge", str(tmp / "r"), "--plan", str(tmp / "plan.json"), "--out", str(tmp / "m.json")])
+            wheel = json.loads((tmp / "m.json").read_text())["wheels"][0]
+        self.assertEqual(wheel["builds"], ["https://github.com/o/r/actions/runs/11", "https://github.com/o/r/actions/runs/12"])
+
+    def test_collect_refuses_odd_arguments(self):
+        for flag, value in (("--batch", "1; rm"), ("--since", "yesterday"), ("--repo", "o/r?x"), ("--sha", "abc")):
+            args = {"--batch": "99-1", "--since": "2026-11-16T02:00:00Z", "--repo": "o/r", "--sha": SHA, flag: value}
+            with self.subTest(flag), self.assertRaises(SystemExit):
+                gap_wheels.main(["collect", "--plan", "x", "--results", "r", *[x for kv in args.items() for x in kv]])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,17 +1,13 @@
-name: Gap wheels (private, step 1)
+name: Gap wheels (private)
 
-# For each release the build lab built cleanly where PyPI has no wheel, build it twice from its sdist in separate jobs,
-# then call a wheel verified only if both builds are byte-identical and pip installs it without compiling anything.
-# The merge job writes manifest.json (filenames and hashes) as an artifact. Nothing is published: no wheel leaves the
-# build jobs, nothing is committed, and nothing is attested. See scripts/gap_wheels.py.
-#
-# The build jobs run each package's own build code, so they get a read-only token and no secrets, and the merge job
-# takes a result only if it is exactly what gap_wheels.py writes for the pair and attempt the plan gave that job.
-# Don't add actions/cache to this workflow: a poisoned cache would make two builds agree.
+# For each release the build lab built cleanly where PyPI has no wheel, build it twice from its sdist, then call a
+# wheel verified only if both builds are byte-identical, from the sdist PyPI publishes, and pip installs it without
+# compiling anything. Each build runs in a workflow run of its own (gap-wheel-build.yml), so a package's build code
+# can't write another build's result. The collect job writes manifest.json (filenames, hashes and each build's run) as
+# an artifact. Nothing is published: no wheel leaves the build runs, nothing is committed, nothing is attested. See
+# scripts/gap_wheels.py.
 
 on:
-  pull_request:
-    paths: [".github/workflows/gap-wheels.yml", "scripts/gap_wheels.py"]
   workflow_dispatch:
     inputs:
       max:
@@ -25,121 +21,75 @@ permissions:
   contents: read
 
 concurrency:
-  group: gap-wheels-${{ github.ref }}
-  cancel-in-progress: true
+  group: gap-wheels
+  cancel-in-progress: false
 
 jobs:
   plan:
+    # Only from main: the build runs are started from main, and collect checks they ran this commit.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      hosted: ${{ steps.plan.outputs.hosted }}
-      hosted_count: ${{ steps.plan.outputs.hosted_count }}
-      docker: ${{ steps.plan.outputs.docker }}
-      docker_count: ${{ steps.plan.outputs.docker_count }}
       all: ${{ steps.plan.outputs.all }}
+      since: ${{ steps.plan.outputs.since }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - id: plan
         env:
-          # A pull request builds a small batch (twice each) to check the pipeline; dispatch runs everything.
-          MAX: ${{ github.event_name == 'pull_request' && '4' || inputs.max || '50' }}
+          MAX: ${{ inputs.max || '50' }}
           ONLY: ${{ inputs.only }}
-        run: python3 scripts/gap_wheels.py plan data/builds.json --max "$MAX" ${ONLY:+--only "$ONLY"} --github-output "$GITHUB_OUTPUT"
-
-  build:
-    needs: plan
-    if: needs.plan.outputs.hosted_count != '0'
-    name: ${{ matrix.name }} ${{ matrix.version }} (${{ matrix.target }}) build ${{ matrix.attempt }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 75
-    strategy:
-      fail-fast: false
-      max-parallel: 20
-      matrix:
-        include: ${{ fromJSON(needs.plan.outputs.hosted) }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: ${{ matrix.python }}
-      - name: Build from the sdist, hash, and (build 1) install
-        shell: bash
-        env:
-          NAME: ${{ matrix.name }}
-          VERSION: ${{ matrix.version }}
-          TARGET: ${{ matrix.target }}
-          ATTEMPT: ${{ matrix.attempt }}
-          RUNNER: ${{ matrix.runner }}
-        run: python scripts/gap_wheels.py build --name "$NAME" --version "$VERSION" --target "$TARGET" --attempt "$ATTEMPT" --runner "$RUNNER" --out result.json
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
-        with:
-          name: result-${{ matrix.id }}-${{ matrix.attempt }}
-          path: result.json
-          if-no-files-found: ignore
-          retention-days: 7
-
-  build-docker:
-    # JavaScript actions can't run inside an Alpine container on ARM runners, so the build runs in `docker run`.
-    needs: plan
-    if: needs.plan.outputs.docker_count != '0'
-    name: ${{ matrix.name }} ${{ matrix.version }} (${{ matrix.target }}) build ${{ matrix.attempt }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 75
-    strategy:
-      fail-fast: false
-      max-parallel: 10
-      matrix:
-        include: ${{ fromJSON(needs.plan.outputs.docker) }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Build from the sdist, hash, and (build 1) install, with Alpine's build-base
-        env:
-          IMAGE: ${{ matrix.image }}
-          NAME: ${{ matrix.name }}
-          VERSION: ${{ matrix.version }}
-          TARGET: ${{ matrix.target }}
-          ATTEMPT: ${{ matrix.attempt }}
-          RUNNER: ${{ matrix.runner }}
         run: |
-          # The checkout is mounted read-only; the result goes to its own folder.
-          mkdir -p "$RUNNER_TEMP/out"
-          docker run --rm -v "$PWD:/lab:ro" -v "$RUNNER_TEMP/out:/out" -w /lab -e NAME -e VERSION -e TARGET -e ATTEMPT -e RUNNER "$IMAGE" sh -c \
-            'apk add --no-cache build-base >/dev/null && python scripts/gap_wheels.py build --name "$NAME" --version "$VERSION" --target "$TARGET" --attempt "$ATTEMPT" --runner "$RUNNER" --out /out/result.json'
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
-        with:
-          name: result-${{ matrix.id }}-${{ matrix.attempt }}
-          path: ${{ runner.temp }}/out/result.json
-          if-no-files-found: ignore
-          retention-days: 7
+          echo "since=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          python3 scripts/gap_wheels.py plan data/builds.json --max "$MAX" ${ONLY:+--only "$ONLY"} --github-output "$GITHUB_OUTPUT"
 
-  merge:
-    needs: [plan, build, build-docker]
-    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.all != '[]' }}
+  dispatch:
+    needs: plan
+    if: needs.plan.outputs.all != '[]'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    permissions:
+      actions: write # to start the build runs; this job runs only our own code
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: result-*
-          path: results
-      - name: Verify the pairs and write the manifest
+      - name: Start one build run per build
         env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           PLAN: ${{ needs.plan.outputs.all }}
         run: |
           printf '%s' "$PLAN" > "$RUNNER_TEMP/plan.json"
-          python3 scripts/gap_wheels.py merge results --plan "$RUNNER_TEMP/plan.json" --out manifest.json --summary "$GITHUB_STEP_SUMMARY"
+          python3 scripts/gap_wheels.py dispatch --plan "$RUNNER_TEMP/plan.json" --batch "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+
+  collect:
+    needs: [plan, dispatch]
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Wait for the build runs and take each one's result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLAN: ${{ needs.plan.outputs.all }}
+          SINCE: ${{ needs.plan.outputs.since }}
+        run: |
+          printf '%s' "$PLAN" > "$RUNNER_TEMP/plan.json"
+          python3 scripts/gap_wheels.py collect --plan "$RUNNER_TEMP/plan.json" --batch "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --since "$SINCE" --results results --wait 270
+      - name: Verify the pairs and write the manifest
+        env:
+          PLAN: ${{ needs.plan.outputs.all }}
+        run: python3 scripts/gap_wheels.py merge results --plan "$RUNNER_TEMP/plan.json" --out manifest.json --summary "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: manifest

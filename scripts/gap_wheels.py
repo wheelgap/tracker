@@ -1,7 +1,9 @@
-"""Gap wheels, step 1: verify which of the build lab's clean builds are reproducible and install. Nothing is published.
+"""Gap wheels: verify which of the build lab's clean builds are reproducible and install. Nothing is published.
 
     python3 scripts/gap_wheels.py plan data/builds.json [--max N] [--only a,b] --github-output FILE
     python scripts/gap_wheels.py build --name NAME --version VERSION --target TARGET --attempt 1|2 --runner R --out FILE
+    python3 scripts/gap_wheels.py dispatch --plan PLAN_JSON --batch RUNID-ATTEMPT
+    python3 scripts/gap_wheels.py collect --plan PLAN_JSON --batch B --repo R --sha SHA --since TIME --results DIR
     python3 scripts/gap_wheels.py merge RESULTS_DIR --plan PLAN_JSON --out MANIFEST [--summary FILE]
 
 A *pair* is a release and lab target the build lab built cleanly (data/builds.json: built, imported, a compiled
@@ -18,13 +20,17 @@ sha256 against PyPI's), and pip installs that wheel file, with `--only-binary :a
 virtual environment on the first build's runner. The merge job writes a manifest of the verified wheels: filename,
 sha256, the sdist's name and sha256, and the run that built them.
 
-Build jobs run each package's own build code with the runner's admin rights, so they're untrusted, as in the build
-lab: they get a read-only token and no secrets, and merge accepts a result only if it is exactly what `build` writes,
-for the pair and attempt the plan gave that job. Two matching builds catch a build that isn't reproducible; they
-don't stop a malicious package. What this can't rule out yet: build code with admin rights could read the job's
-artifact token and upload well-formed results under another job's name, for both attempts, with any hash it likes.
-So these hashes are observations, not a basis for publishing: before anything is published (step 3), each result
-must come from somewhere only its own job can write. This step uploads no wheel anywhere: only results (hashes)
+Build jobs run each package's own build code with the runner's admin rights, so they're untrusted: they get a
+read-only token and no secrets, and merge accepts a result only if it is exactly what `build` writes, for the pair
+and attempt the plan gave that job. Two matching builds catch a build that isn't reproducible; they don't stop a
+malicious package from shipping a malicious wheel *of itself* (its sdist would do the same on install).
+
+What they must not be able to do is speak for another package. Build code with admin rights can read its job's
+artifact token, and that token can write any artifact name in its own workflow run. So each build runs in a
+workflow run of its own (`dispatch` starts one run of gap-wheel-build.yml per build, titled with its batch, pair and
+attempt), and `collect` takes each result only from the one run with that exact title, started from main at the
+coordinator's commit by workflow_dispatch after the batch began; two runs with the same title mean neither counts.
+A build can then forge nothing but its own result. This step uploads no wheel anywhere: only results (hashes)
 leave the build jobs.
 """
 
@@ -33,6 +39,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
+import io
 import json
 import os
 import re
@@ -41,6 +48,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.request
 import zipfile
 from collections.abc import Callable
@@ -349,6 +357,13 @@ def cmd_merge(args: argparse.Namespace) -> int:
         if path.is_file():
             results[(job["id"], job["attempt"])] = read_result(path)
     verified, report = verify(jobs, results, pypi_sdists)
+    runs_file = Path(args.results) / "runs.json"
+    if runs_file.is_file():  # written by collect, which is trusted
+        urls = json.loads(runs_file.read_text(encoding="utf-8"))
+        ids = {(j["name"], j["version"], j["target"]): j["id"] for j in jobs}
+        for wheel in verified:
+            pid = ids[(wheel["name"], wheel["version"], wheel["target"])]
+            wheel["builds"] = [urls.get(f"{pid}-1"), urls.get(f"{pid}-2")]
     run = ""
     if all(os.environ.get(k) for k in ("GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID")):
         run = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
@@ -363,6 +378,122 @@ def cmd_merge(args: argparse.Namespace) -> int:
     if args.summary:
         with open(args.summary, "a", encoding="utf-8") as f:
             f.write(text)
+    return 0
+
+
+# --- dispatch and collect: one workflow run per build (trusted) ------------------------------------------------------
+
+BUILD_WORKFLOW = "gap-wheel-build.yml"
+BATCH = re.compile(r"[0-9]{1,20}-[0-9]{1,4}", re.ASCII)
+SINCE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", re.ASCII)  # as the API writes created_at
+REPO = re.compile(r"[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}", re.ASCII)
+SHA = re.compile(r"[0-9a-f]{40}", re.ASCII)
+MAX_ARTIFACT_BYTES = 100_000
+
+
+def title(batch: str, job: dict) -> str:
+    """The build run's title; gap-wheel-build.yml's run-name gives the same string from its inputs."""
+    return f"gap-wheel {batch} {job['name']} {job['version']} {job['target']} build {job['attempt']}"
+
+
+def gh(args: list[str]) -> bytes:
+    return subprocess.run(["gh", *args], check=True, capture_output=True, timeout=120).stdout
+
+
+def cmd_dispatch(args: argparse.Namespace) -> int:
+    if not BATCH.fullmatch(args.batch):
+        raise SystemExit(f"gap_wheels: not a batch id: {args.batch!r}")
+    jobs = json.loads(Path(args.plan).read_text(encoding="utf-8"))
+    for job in jobs:
+        spec = build_lab.TARGETS[job["target"]]  # the plan's own values, checked again: they become a run's inputs
+        if not (build_lab.NAME.fullmatch(job["name"]) and build_lab.VERSION.fullmatch(job["version"])):
+            raise SystemExit(f"gap_wheels: not a plan job: {job!r}")
+        fields = {"batch": args.batch, "name": job["name"], "version": job["version"], "target": job["target"],
+                  "attempt": str(job["attempt"]), "runner": spec["runner"], "python": spec["python"],
+                  "image": spec.get("image", "")}  # fmt: skip
+        gh(["workflow", "run", BUILD_WORKFLOW, "--ref", "main", *[x for k, v in fields.items() for x in ("-f", f"{k}={v}")]])
+        print(f"started {title(args.batch, job)}")
+    return 0
+
+
+def pick_runs(jobs: list[dict], runs: list[dict], batch: str, sha: str, since: str) -> dict[tuple[str, int], dict | str]:
+    """By (id, attempt): the one build run that can speak for that job, or why there isn't one."""
+    by_title: dict[str, list[dict]] = {}
+    for run in runs:
+        if isinstance(run, dict) and isinstance(run.get("display_title"), str):
+            by_title.setdefault(run["display_title"], []).append(run)
+    out: dict[tuple[str, int], dict | str] = {}
+    for job in jobs:
+        found = by_title.get(title(batch, job), [])
+        if not found:
+            out[(job["id"], job["attempt"])] = "no build run"
+        elif len(found) > 1:
+            out[(job["id"], job["attempt"])] = "more than one build run with its title"
+        elif not (
+            found[0].get("event") == "workflow_dispatch"
+            and found[0].get("head_branch") == "main"
+            and found[0].get("head_sha") == sha
+            and found[0].get("path") == f".github/workflows/{BUILD_WORKFLOW}"
+            and str(found[0].get("created_at", "")) >= since
+        ):
+            out[(job["id"], job["attempt"])] = "the build run isn't one this batch started"
+        elif found[0].get("status") != "completed":
+            out[(job["id"], job["attempt"])] = "the build run hasn't finished"
+        else:
+            out[(job["id"], job["attempt"])] = found[0]
+    return out
+
+
+def list_runs(repo: str, since: str) -> list[dict]:
+    query = f"event=workflow_dispatch&branch=main&created=%3E%3D{since}&per_page=100"
+    pages = gh(["api", "--paginate", "--slurp", f"repos/{repo}/actions/workflows/{BUILD_WORKFLOW}/runs?{query}"])
+    return [run for page in json.loads(pages) for run in page.get("workflow_runs", [])]
+
+
+def fetch_result(repo: str, run: dict) -> bytes | None:
+    """The run's `result` artifact's result.json, or None."""
+    listing = json.loads(gh(["api", f"repos/{repo}/actions/runs/{int(run['id'])}/artifacts?name=result"]))
+    artifacts = [a for a in listing.get("artifacts", []) if a.get("name") == "result" and not a.get("expired")]
+    if len(artifacts) != 1 or int(artifacts[0].get("size_in_bytes", 0)) > MAX_ARTIFACT_BYTES:
+        return None
+    archive = gh(["api", f"repos/{repo}/actions/artifacts/{int(artifacts[0]['id'])}/zip"])
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive)) as z:
+            info = z.getinfo("result.json")
+            if info.file_size > MAX_RESULT_BYTES:
+                return None
+            return z.read(info)
+    except (zipfile.BadZipFile, KeyError):
+        return None
+
+
+def cmd_collect(args: argparse.Namespace) -> int:
+    """Wait for the batch's build runs, then put each result where merge looks: RESULTS/result-ID-ATTEMPT/result.json,
+    and RESULTS/runs.json: by "ID-ATTEMPT", the build run's URL."""
+    if not (BATCH.fullmatch(args.batch) and SINCE.fullmatch(args.since) and REPO.fullmatch(args.repo)
+            and SHA.fullmatch(args.sha)):  # fmt: skip
+        raise SystemExit("gap_wheels: bad --batch, --since, --repo or --sha")
+    jobs = json.loads(Path(args.plan).read_text(encoding="utf-8"))
+    deadline = time.monotonic() + args.wait * 60
+    while True:
+        picked = pick_runs(jobs, list_runs(args.repo, args.since), args.batch, args.sha, args.since)
+        waiting = [k for k, v in picked.items() if v in ("no build run", "the build run hasn't finished")]
+        print(f"{len(picked) - len(waiting)} of {len(picked)} builds done", file=sys.stderr)
+        if not waiting or time.monotonic() > deadline:
+            break
+        time.sleep(60)
+    out = Path(args.results)
+    urls = {}
+    for (pid, attempt), run in picked.items():
+        if isinstance(run, str):
+            print(f"build {pid}-{attempt}: {run}", file=sys.stderr)
+            continue
+        urls[f"{pid}-{attempt}"] = f"https://github.com/{args.repo}/actions/runs/{int(run['id'])}"
+        if (data := fetch_result(args.repo, run)) is not None:
+            (out / f"result-{pid}-{attempt}").mkdir(parents=True, exist_ok=True)
+            (out / f"result-{pid}-{attempt}" / "result.json").write_bytes(data)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "runs.json").write_text(json.dumps(urls) + "\n", encoding="utf-8")
     return 0
 
 
@@ -386,6 +517,15 @@ def main(argv: list[str] | None = None) -> int:
     m.add_argument("--out", required=True)
     m.add_argument("--summary")
     m.set_defaults(func=cmd_merge)
+    d = sub.add_parser("dispatch")
+    d.add_argument("--plan", required=True)
+    d.add_argument("--batch", required=True)
+    d.set_defaults(func=cmd_dispatch)
+    c = sub.add_parser("collect")
+    for flag in ("--plan", "--batch", "--repo", "--sha", "--since", "--results"):
+        c.add_argument(flag, required=True)
+    c.add_argument("--wait", type=int, default=240, help="minutes to wait for the build runs")
+    c.set_defaults(func=cmd_collect)
     args = parser.parse_args(argv)
     return args.func(args)
 
