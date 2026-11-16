@@ -92,6 +92,8 @@ function renderKPIs() {
 
   if ($("kpi-packages")) $("kpi-packages").textContent = fmt(n);
   if ($("kpi-targets")) $("kpi-targets").textContent = fmt(d.targets.length);
+  const nPlatforms = new Set(d.targets.map((t) => t.platform)).size;
+  if ($("kpi-targets-sub")) $("kpi-targets-sub").textContent = `${nPlatforms} platforms across ${pythons().length} Pythons`;
   if ($("kpi-pure")) $("kpi-pure").textContent = fmt(pure);
   if ($("kpi-pure-pct")) $("kpi-pure-pct").textContent = `${purePct}% · ship a pure Python wheel`;
   if ($("kpi-compiled")) $("kpi-compiled").textContent = fmt(compiled);
@@ -165,32 +167,6 @@ function previousScan() {
   return h.length > 1 ? h[h.length - 2] : null;
 }
 
-// Background compatibility renderer for platforms list
-function renderPlatforms() {
-  const d = state.data;
-  const n = d.packages.length;
-  const prev = previousScan();
-  const rows = d.targets
-    .filter((t) => t.python === state.python)
-    .map((t) => {
-      const s = d.summary[t.label];
-      const [name] = platformName(t.platform);
-      const { bundled, ok, delta, percent, widths } = platformStats(s, prev?.summary?.[t.label] ?? null, n, prev?.wheelgap, d.wheelgap);
-      const trend = delta ? ` <span class="trend-delta trend-up">${delta > 0 ? "+" : ""}${delta}</span>` : "";
-      const seg = (k) => `<span class="b-${k}" style="width:${widths[k].toFixed(1)}%"></span>`;
-      const counts = [`${fmt(s.wheel)} wheel`, ...(bundled ? [`${fmt(bundled)} bundled with Pyodide`] : []),
-        `${fmt(s.source)} from source`, `${fmt(s.missing)} can't install`].join(" · ");
-      return `<li><button data-platform="${esc(t.platform)}" aria-pressed="${t.platform === state.platform}"
-          aria-label="${esc(name)}: ${percent.toFixed(1)}% have a wheel${bundled ? " or a Pyodide build" : ""}">
-        <span class="pname">${esc(name)}<small>${esc(platformDetail(t))}</small></span>
-        <span class="bar" title="${esc(counts)}">
-          ${seg("wheel")}${seg("bundled")}${seg("source")}${seg("missing")}${seg("unknown")}</span>
-        <span class="pct">${percent.toFixed(1)}%<small>${fmt(n - ok)} without${trend}</small></span>
-      </button></li>`;
-    });
-  $("platforms").innerHTML = rows.join("");
-}
-
 // Sparklines helper
 function coverageSeries(label) {
   return state.history
@@ -221,29 +197,15 @@ function sparkline(points, name) {
 }
 
 function renderTrends() {
-  const dates = [];
-  const rows = state.data.targets
+  // The sparklines are on the leaderboard cards; this is the note under them, saying what they plot.
+  const dates = state.data.targets
     .filter((t) => t.python === state.python)
-    .map((t) => {
-      const points = coverageSeries(t.label);
-      if (points.length < 2) return "";
-      dates.push(...points.map((p) => p.date));
-      const [name] = platformName(t.platform);
-      const first = points[0], last = points[points.length - 1];
-      const delta = Number((last.value - first.value).toFixed(1));
-      const change = `${delta >= 0 ? "+" : "−"}${Math.abs(delta).toFixed(1)} points since ${first.date}`;
-      return `<li><span class="pname">${esc(name)}</span>
-        <span class="pct">${last.value.toFixed(1)}%</span>
-        ${sparkline(points, name)}
-        <small class="change">${esc(change)}</small></li>`;
-    })
-    .join("");
-  $("trends").innerHTML = rows;
-  $("trend-section").hidden = !rows;
-  dates.sort();
-  $("trend-note").textContent = rows
-    ? `Share of packages with a wheel for Python ${state.python}, one point per nightly scan from ${dates[0]} to ${dates[dates.length - 1]}. Each chart is scaled to its own range.` +
-      (state.pyodide[state.python] ? " On Pyodide that's PyPI wheels only: the bars above also count Pyodide's own builds." : "")
+    .flatMap((t) => coverageSeries(t.label))
+    .map((p) => p.date)
+    .sort();
+  $("trend-note").textContent = dates.length > 1
+    ? `Sparklines: the share of all packages with a wheel for Python ${state.python}, one point per nightly scan from ${dates[0]} to ${dates[dates.length - 1]}. Each is scaled to its own range.` +
+      (state.pyodide[state.python] ? " On Pyodide that's PyPI wheels only: the percentages also count Pyodide's own builds." : "")
     : "";
 }
 
@@ -291,7 +253,7 @@ function renderOmniAnswer() {
     return;
   }
 
-  const [base] = splitSpec(pkgName);
+  const [base, pinned] = splitSpec(pkgName);
   const q = canonicalName(base);
   const p = state.data.packages.find((x) => canonicalName(x.name) === q);
 
@@ -384,6 +346,13 @@ function renderOmniAnswer() {
   }
 
   const cliCmd = whyCommand(p.name, p.version, py, pl, state.pyodide);
+  // A pinned version the scan didn't check: the verdict is for the latest release, so say that.
+  // The command only for a valid name==version (#57): the text can come from a shared link.
+  const pinNote = pinned === null || pinned === p.version
+    ? ""
+    : isPackageSpec(pkgName)
+      ? ` · The scan checks the latest release, ${esc(p.version ?? "")}, not ${esc(pinned)}: run <code>uvx wheelgap ${esc(pkgName)} -p ${esc(py)} -t ${esc(pl)} --explain</code> for that one.`
+      : ` · The scan checks the latest release, ${esc(p.version ?? "")}.`;
   const pypiUrl = `https://pypi.org/project/${encodeURIComponent(p.name)}/${encodeURIComponent(p.version ?? "")}/`;
 
   container.innerHTML = `
@@ -393,7 +362,7 @@ function renderOmniAnswer() {
       </div>
       <div class="verdict-text-block">
         <strong class="verdict-pkg-title">${esc(p.name)} <small>${esc(p.version ?? "")}</small></strong>
-        <span class="verdict-summary">${summary}</span>
+        <span class="verdict-summary">${summary}${pinNote}</span>
         <span class="verdict-meta-inline">${p.pure ? "Pure Python" : "Compiled"} · #${esc(p.rank)} · ${formatDownloads(p.downloads)} dl/mo</span>
       </div>
       <div class="verdict-bar-actions">
@@ -511,7 +480,8 @@ function renderLeaderboard() {
       ? `<span class="board-delta ${item.delta > 0 ? "delta-up" : "delta-down"}">${item.delta > 0 ? "+" : ""}${item.delta} this scan</span>`
       : "";
 
-    const sparkHtml = item.series.length >= 2 ? sparkline(item.series, item.name) : "";
+    // History has all packages' coverage only, so the compiled-only view shows no sparkline rather than a different number.
+    const sparkHtml = !state.showCompiledOnly && item.series.length >= 2 ? sparkline(item.series, item.name) : "";
 
     const countsTitle = `${fmt(item.wheel)} wheel · ${item.bundled ? fmt(item.bundled) + " bundled · " : ""}${fmt(item.source)} source · ${fmt(item.missing)} missing`;
 
@@ -677,7 +647,9 @@ function renderGaps() {
   if (!total) {
     const msg = state.filterQuery
       ? `No matching gap packages for "${esc(state.filterQuery)}".`
-      : "Every package has a prebuilt wheel for this platform.";
+      : state.filterStatus !== "all"
+        ? `No packages ${state.filterStatus === "missing" ? "that can't be installed" : "that build from source"} here.`
+        : "Every package has a prebuilt wheel for this platform.";
     $("gaps").innerHTML = `<tr><td colspan="5" class="empty" style="padding:18px;text-align:center;color:var(--text-muted)">${msg}</td></tr>`;
     return;
   }
@@ -690,7 +662,6 @@ function renderGaps() {
     const s = p.results[i];
     const pureBadge = p.pure ? ` <span class="status s-wheel" style="font-size:0.68rem;padding:1px 6px">pure</span>` : "";
     const isExpanded = state.expandedPkg === p.name;
-    const isMissing = s === "missing";
     const cliCmd = whyCommand(p.name, p.version, state.python, state.platform, state.pyodide);
     const pypiUrl = `https://pypi.org/project/${encodeURIComponent(p.name)}/${encodeURIComponent(p.version ?? "")}/`;
 
@@ -701,8 +672,8 @@ function renderGaps() {
         <span class="pkg-version">${esc(p.version ?? "")}</span>${pureBadge}
       </td>
       <td>${statusBadge(s)}</td>
-      <td style="text-align:right" class="pkg-downloads" title="${fmt(p.downloads)} downloads">${formatDownloads(p.downloads)}</td>
-      <td style="text-align:right" style="white-space:nowrap">
+      <td style="text-align:right" class="pkg-downloads" title="${esc(fmt(p.downloads))} downloads">${formatDownloads(p.downloads)}</td>
+      <td style="text-align:right;white-space:nowrap">
         <a href="${pypiUrl}" target="_blank" rel="noopener" class="table-ext-link" title="Open package release on PyPI">PyPI ↗</a>
         <button type="button" class="row-expand-btn" data-pkg="${esc(p.name)}" aria-label="Toggle details">${isExpanded ? "▲" : "▼"}</button>
       </td>
@@ -716,7 +687,7 @@ function renderGaps() {
               <strong>${esc(p.name)}</strong> compatibility summary:
             </div>
             <div class="inline-targets-pills">
-              <span class="inline-target-pill ${isMissing ? "pill-missing" : "pill-source"}">This Platform (${esc(state.platform)}): ${isMissing ? "✕ cannot install" : "⚡ builds from source"}</span>
+              <span class="inline-target-pill ${s === "missing" ? "pill-missing" : s === "source" ? "pill-source" : ""}">This Platform (${esc(state.platform)}): ${s === "missing" ? "✕ cannot install" : s === "source" ? "⚡ builds from source" : "? unknown (the lookup failed)"}</span>
               <span class="inline-target-pill pill-wheel">Pure Python wheel: ${p.pure ? "yes" : "no (compiled code)"}</span>
               <span class="inline-target-pill pill-wheel">Rank: #${esc(p.rank)}</span>
             </div>
@@ -745,22 +716,19 @@ function renderPulse() {
   if (!container) return;
 
   if (!Array.isArray(state.changes) || !state.changes.length) {
-    container.innerHTML = `<li class="feed-placeholder" style="color:var(--text-muted);padding:14px">No recent wheel changes recorded in last 7 days.</li>`;
+    container.innerHTML = `<li class="feed-placeholder" style="color:var(--text-muted);padding:14px">No wheel changes recorded yet.</li>`;
     return;
   }
 
+  // Newest scans first; within a scan, wheels lost before wheels gained (losses are rarer, and the ones to act on).
+  // Up to 15, but every loss in that window is kept rather than crowded out by gains.
   const items = [];
   for (let idx = state.changes.length - 1; idx >= 0 && items.length < 15; idx--) {
     const day = state.changes[idx];
-    if (!day) continue;
-    for (const g of day.gained ?? []) {
-      items.push({ type: "gain", ...g, date: day.date });
-      if (items.length >= 15) break;
-    }
-    for (const l of day.lost ?? []) {
-      if (items.length >= 15) break;
-      items.push({ type: "loss", ...l, date: day.date });
-    }
+    if (!day || typeof day !== "object") continue;
+    const lost = (Array.isArray(day.lost) ? day.lost : []).map((l) => ({ type: "loss", ...l, date: day.date }));
+    const gained = (Array.isArray(day.gained) ? day.gained : []).map((g) => ({ type: "gain", ...g, date: day.date }));
+    items.push(...lost, ...gained.slice(0, Math.max(0, 15 - items.length - lost.length)));
   }
 
   if (!items.length) {
@@ -834,7 +802,7 @@ function buildPackageCardHTML(p, extra = null, pinNote = "") {
     <div class="badge-snippet">
       <p class="sub" style="margin:0 0 6px">Badge for your repository README</p>
       <pre class="badge-md"><code>${esc(badgeMarkdown(p))}</code></pre>
-      <button type="button" class="copy-badge">Copy badge</button>
+      <button type="button" class="copy-badge" data-md="${esc(badgeMarkdown(p))}">Copy badge</button>
     </div>
   </div>`;
 }
@@ -864,19 +832,6 @@ function renderLookup(query, extra = null) {
 
   $("lookup").innerHTML = buildPackageCardHTML(p, extra, pinNote);
 
-  const copy = $("lookup").querySelector(".copy-badge");
-  if (copy) {
-    const md = badgeMarkdown(p);
-    copy.addEventListener("click", async () => {
-      try {
-        await navigator.clipboard.writeText(md);
-        copy.textContent = "Copied!";
-        setTimeout(() => { copy.textContent = "Copy badge"; }, 1500);
-      } catch {
-        copy.textContent = "Select and copy";
-      }
-    });
-  }
 
   if (extra === null && !p.error && p.results.includes("bundled")) {
     const cached = bundledCache.get(q);
@@ -907,23 +862,12 @@ function openDrawer(packageName) {
   $("drawer-subtitle").textContent = `#${fmt(p.rank)} by downloads · ${formatDownloads(p.downloads)} dl/mo`;
   $("drawer-content").innerHTML = buildPackageCardHTML(p, null);
 
-  const copy = $("drawer-content").querySelector(".copy-badge");
-  if (copy) {
-    const md = badgeMarkdown(p);
-    copy.addEventListener("click", async () => {
-      try {
-        await navigator.clipboard.writeText(md);
-        copy.textContent = "Copied!";
-        setTimeout(() => { copy.textContent = "Copy badge"; }, 1500);
-      } catch {
-        copy.textContent = "Select and copy";
-      }
-    });
-  }
 
+  if ($("drawer").hidden) drawerReturnFocus = document.activeElement;
   $("drawer").hidden = false;
   $("drawer-backdrop").hidden = false;
   document.body.style.overflow = "hidden";
+  $("drawer-close")?.focus();
 
   if (!p.error && p.results.includes("bundled")) {
     const cached = bundledCache.get(q);
@@ -946,10 +890,14 @@ function openDrawer(packageName) {
   }
 }
 
+let drawerReturnFocus = null;
+
 function closeDrawer() {
   $("drawer").hidden = true;
   $("drawer-backdrop").hidden = true;
   document.body.style.overflow = "";
+  drawerReturnFocus?.focus?.();
+  drawerReturnFocus = null;
 }
 
 // Export System
@@ -1060,7 +1008,6 @@ function renderAll() {
   populateOmniSelects();
   renderOmniAnswer();
   renderLeaderboard();
-  renderPlatforms();
   renderTrends();
   renderGaps();
   renderPulse();
@@ -1178,7 +1125,6 @@ async function main() {
     state.currentPage = 1;
     populateOmniSelects();
     renderLeaderboard();
-    renderPlatforms();
     renderGaps();
     renderOmniAnswer();
     renderLookup($("search").value); // its "Why?" command names the selected platform
@@ -1206,7 +1152,6 @@ async function main() {
     state.platform = e.target.value;
     state.currentPage = 1;
     renderLeaderboard();
-    renderPlatforms();
     renderGaps();
     renderOmniAnswer();
     renderLookup($("search").value);
@@ -1313,6 +1258,19 @@ async function main() {
 
   // Delegated clicks: Copy CLI repro command, verdict buttons, package drawers
   document.addEventListener("click", async (e) => {
+    // Copy badge (lookup card and drawer)
+    const copyBadge = e.target.closest(".copy-badge");
+    if (copyBadge && copyBadge.dataset.md) {
+      try {
+        await navigator.clipboard.writeText(copyBadge.dataset.md);
+        copyBadge.textContent = "Copied!";
+        setTimeout(() => { copyBadge.textContent = "Copy badge"; }, 1500);
+      } catch {
+        copyBadge.textContent = "Select and copy";
+      }
+      return;
+    }
+
     // Copy CLI repro command button
     const copyRepro = e.target.closest(".btn-copy-repro");
     if (copyRepro && copyRepro.dataset.cmd) {
@@ -1358,7 +1316,7 @@ async function main() {
     const link = e.target.closest("a[data-pkg], .pkg-name-link");
     if (link && link.dataset.pkg) {
       e.preventDefault();
-      if (window.innerWidth <= 640) {
+      if (window.innerWidth <= 640 && !link.classList.contains("pulse-pkg")) {
         state.expandedPkg = state.expandedPkg === link.dataset.pkg ? null : link.dataset.pkg;
         renderGaps();
       } else {
@@ -1432,6 +1390,27 @@ async function main() {
     renderLookup($("search").value);
     writeHash();
   });
+  $("search-autocomplete")?.addEventListener("keydown", (e) => {
+    const item = e.target.closest(".autocomplete-item");
+    if (!item) return;
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      item.click();
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const sib = e.key === "ArrowDown" ? item.nextElementSibling : item.previousElementSibling;
+      (sib ?? (e.key === "ArrowUp" ? $("search") : null))?.focus();
+    }
+  });
+  $("search").addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" && !$("search-autocomplete")?.hidden) {
+      const first = $("search-autocomplete").querySelector(".autocomplete-item");
+      if (first) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+  });
   $("search-autocomplete")?.addEventListener("click", (e) => {
     const item = e.target.closest(".autocomplete-item");
     if (!item) return;
@@ -1472,6 +1451,22 @@ async function main() {
   });
   $("cmd-input")?.addEventListener("input", (e) => {
     renderCmdResults(e.target.value);
+  });
+  $("cmd-input")?.addEventListener("keydown", (e) => {
+    const items = [...$("cmd-results").querySelectorAll(".cmd-result-item")];
+    if (!items.length) return;
+    const at = Math.max(0, items.findIndex((x) => x.classList.contains("selected")));
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const next = (at + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length;
+      items[at].classList.remove("selected");
+      items[next].classList.add("selected");
+      items[next].scrollIntoView?.({ block: "nearest" });
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      closeCommandPalette();
+      openDrawer(items[at].dataset.pkg);
+    }
   });
   $("cmd-results")?.addEventListener("click", (e) => {
     const item = e.target.closest(".cmd-result-item");

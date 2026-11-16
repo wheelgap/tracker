@@ -6,7 +6,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'">
   <title>Python Wheel Coverage</title>
   <meta name="description" content="Which of the top 5,000 PyPI packages ship a prebuilt wheel for Linux ARM, Alpine, Windows on ARM, macOS, free-threaded Python and Pyodide. Updated nightly by wheelgap.">
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="home.css">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
   <meta property="og:type" content="website">
@@ -94,12 +94,12 @@
         <div class="kpi-card">
           <span class="kpi-label">Targets Scanned</span>
           <span class="kpi-val" id="kpi-targets"><span class="skeleton-text">—</span></span>
-          <span class="kpi-sub">9 platforms × 5 Pythons</span>
+          <span class="kpi-sub" id="kpi-targets-sub">platform and Python pairs</span>
         </div>
         <div class="kpi-card">
           <span class="kpi-label">Pure Python</span>
           <span class="kpi-val" id="kpi-pure"><span class="skeleton-text">—</span></span>
-          <span class="kpi-sub" id="kpi-pure-pct">installs everywhere</span>
+          <span class="kpi-sub" id="kpi-pure-pct">ship a pure Python wheel</span>
         </div>
         <div class="kpi-card">
           <span class="kpi-label">Compiled Code</span>
@@ -149,12 +149,6 @@
         </div>
         <p class="section-sub spark-note" id="trend-note"></p>
 
-        <!-- Backward Compatibility Hooks for existing tests -->
-        <ol class="platforms visually-hidden" id="platforms" aria-hidden="true"></ol>
-        <section id="trend-section" class="visually-hidden" aria-hidden="true">
-          <h3 id="trend-title">Coverage over time</h3>
-          <ol id="trends"></ol>
-        </section>
       </section>
 
       <!-- ====================================================================
@@ -186,7 +180,7 @@
             <div class="omni-field omni-pkg-field">
               <label for="search" class="omni-label">Package Name</label>
               <div class="autocomplete-wrapper">
-                <input id="search" placeholder="Type package (e.g. numpy, grpcio, psycopg2)…" autocomplete="off" spellcheck="false" value="numpy">
+                <input id="search" placeholder="Type package (e.g. numpy, grpcio, psycopg2)…" autocomplete="off" spellcheck="false">
                 <button type="button" class="search-clear-btn" id="search-clear-btn" aria-label="Clear package input" title="Clear input">✕</button>
                 <div class="autocomplete-menu" id="search-autocomplete" hidden></div>
               </div>

