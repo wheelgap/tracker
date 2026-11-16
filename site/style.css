@@ -2191,3 +2191,20 @@ button, input, select {
     justify-content: center;
   }
 }
+
+/* Build lab section (site/lab.js) */
+.lab-panel[hidden] { display: none; }
+.lab-summary { list-style: none; margin: 0 0 14px; padding: 0; display: grid; gap: 8px; }
+.lab-summary li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.lab-summary .pname { min-width: 11em; font-family: var(--mono); font-size: 0.9rem; }
+.lab-counts { display: flex; flex-wrap: wrap; gap: 6px; }
+.lab-table td { vertical-align: top; }
+.lab-table .ver { margin-left: 6px; color: var(--text-muted); font-size: 0.8rem; }
+.lab-where { color: var(--text-muted); font-size: 0.8rem; }
+.lab-where details { margin-top: 4px; }
+.lab-where code { display: block; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
+
+/* Sparkline note under the platform cards, and the design credit in the footer */
+.spark-note:empty { display: none; }
+.spark-note { margin-top: 10px; }
+.footer-credit { margin: 14px 0 0; font-size: 0.8rem; color: var(--text-muted); }

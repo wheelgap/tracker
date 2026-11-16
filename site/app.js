@@ -1,5 +1,7 @@
 "use strict";
-// Uses the helpers in logic.js (installable, platformStats, bundledDetail, ...), loaded before this file.
+// Design: "Precision UI" by Kunal Shah (@kunalkshah1), the winner of the tracker's redesign challenge.
+// Uses the helpers in logic.js (isPackageSpec, splitSpec, installable, platformStats, bundledDetail, ...), loaded before
+// this file. The build lab section is site/lab.js.
 
 const PLATFORM_NAMES = {
   "linux-x86_64": ["Linux x86_64", "glibc · manylinux"],
@@ -91,7 +93,7 @@ function renderKPIs() {
   if ($("kpi-packages")) $("kpi-packages").textContent = fmt(n);
   if ($("kpi-targets")) $("kpi-targets").textContent = fmt(d.targets.length);
   if ($("kpi-pure")) $("kpi-pure").textContent = fmt(pure);
-  if ($("kpi-pure-pct")) $("kpi-pure-pct").textContent = `${purePct}% · installs everywhere`;
+  if ($("kpi-pure-pct")) $("kpi-pure-pct").textContent = `${purePct}% · ship a pure Python wheel`;
   if ($("kpi-compiled")) $("kpi-compiled").textContent = fmt(compiled);
 }
 
@@ -104,7 +106,7 @@ function renderMeta() {
     `wheelgap ${d.wheelgap} · download ranking from ${d.top_packages.last_update?.slice(0, 10) ?? "top-pypi-packages"}`;
   const pure = d.packages.filter((p) => p.pure).length;
   $("pure-note").textContent =
-    `${fmt(pure)} of the ${fmt(d.packages.length)} are pure Python and install everywhere; ` +
+    `${fmt(pure)} of the ${fmt(d.packages.length)} ship a pure Python wheel; ` +
     `the gaps are among the ${fmt(d.packages.length - pure)} with compiled code.`;
   const anyBundled = Object.values(d.summary ?? {}).some((s) => s && s.bundled > 0);
   const footer = pyodideFooter(state.pyodide, anyBundled);
@@ -134,7 +136,7 @@ function agreementText(a, now = Date.now()) {
       compiled.checks > 0 && compiled.matched <= compiled.checks) {
     text +=
       `, and on ${rateText(compiled.matched, compiled.checks)}% of the ${fmt(compiled.checks)} for the ` +
-      `${fmt(compiled.packages)} packages without a pure-Python wheel (the rest install everywhere)`;
+      `${fmt(compiled.packages)} packages without a pure-Python wheel (the rest ship one)`;
   }
   return `${text}. ${fmt(skipped)} skipped, ${fmt(errors)} without an answer from pip. `;
 }
@@ -157,21 +159,23 @@ function renderTabs() {
     .join("");
 }
 
-function previousSummary(label) {
+// The night before the latest scan in data/history.json, or null.
+function previousScan() {
   const h = state.history;
-  return h.length > 1 ? h[h.length - 2].summary[label] : null;
+  return h.length > 1 ? h[h.length - 2] : null;
 }
 
 // Background compatibility renderer for platforms list
 function renderPlatforms() {
   const d = state.data;
   const n = d.packages.length;
+  const prev = previousScan();
   const rows = d.targets
     .filter((t) => t.python === state.python)
     .map((t) => {
       const s = d.summary[t.label];
       const [name] = platformName(t.platform);
-      const { bundled, ok, delta, percent, widths } = platformStats(s, previousSummary(t.label), n);
+      const { bundled, ok, delta, percent, widths } = platformStats(s, prev?.summary?.[t.label] ?? null, n, prev?.wheelgap, d.wheelgap);
       const trend = delta ? ` <span class="trend-delta trend-up">${delta > 0 ? "+" : ""}${delta}</span>` : "";
       const seg = (k) => `<span class="b-${k}" style="width:${widths[k].toFixed(1)}%"></span>`;
       const counts = [`${fmt(s.wheel)} wheel`, ...(bundled ? [`${fmt(bundled)} bundled with Pyodide`] : []),
@@ -287,8 +291,21 @@ function renderOmniAnswer() {
     return;
   }
 
-  const q = canonicalName(pkgName);
+  const [base] = splitSpec(pkgName);
+  const q = canonicalName(base);
   const p = state.data.packages.find((x) => canonicalName(x.name) === q);
+
+  if (!p && !isPackageSpec(pkgName)) {
+    // Never echo arbitrary text (it can come from a shared link) or put it in a command someone might paste.
+    container.innerHTML = `
+      <div class="verdict-bar verdict-notfound">
+        <div class="verdict-text-block">
+          <span class="verdict-summary">That isn't a valid package name.</span>
+        </div>
+      </div>`;
+    if (miniContainer) miniContainer.innerHTML = `<span class="mini-summary-text text-muted">That isn't a valid package name.</span>`;
+    return;
+  }
 
   if (!p) {
     const cliFallback = `uvx wheelgap ${pkgName} -p ${py} -t ${pl} --explain`;
@@ -298,19 +315,19 @@ function renderOmniAnswer() {
           <span class="verdict-status-pill badge-missing">Not in Top ${fmt(state.data.packages.length)}</span>
         </div>
         <div class="verdict-text-block">
-          <span class="verdict-summary"><strong>"${esc(pkgName)}"</strong> is not in PyPI's top ${fmt(state.data.packages.length)} packages. Verify via CLI: <code>${esc(cliFallback)}</code></span>
+          <span class="verdict-summary"><strong>${esc(base)}</strong> isn't in the top ${fmt(state.data.packages.length)} PyPI packages the scan checks. Check it, or any package at a pinned version, locally: <code>${esc(cliFallback)}</code></span>
         </div>
         <div class="verdict-bar-actions">
           <button type="button" class="vbtn vbtn-repro btn-copy-repro" data-cmd="${esc(cliFallback)}">Copy CLI</button>
-          <a href="https://pypi.org/search/?q=${encodeURIComponent(pkgName)}" target="_blank" rel="noopener" class="vbtn vbtn-ext">Search PyPI ↗</a>
+          <a href="https://pypi.org/search/?q=${encodeURIComponent(base)}" target="_blank" rel="noopener" class="vbtn vbtn-ext">Search PyPI ↗</a>
         </div>
       </div>`;
     if (miniContainer) {
       miniContainer.innerHTML = `
         <span class="mini-summary-pill badge-missing">Not in Top ${fmt(state.data.packages.length)}</span>
-        <span class="mini-summary-text"><strong>"${esc(pkgName)}"</strong></span>
+        <span class="mini-summary-text"><strong>${esc(base)}</strong></span>
         <div class="mini-summary-actions">
-          <a href="https://pypi.org/search/?q=${encodeURIComponent(pkgName)}" target="_blank" rel="noopener" class="vbtn vbtn-ext mini-btn">Search PyPI ↗</a>
+          <a href="https://pypi.org/search/?q=${encodeURIComponent(base)}" target="_blank" rel="noopener" class="vbtn vbtn-ext mini-btn">Search PyPI ↗</a>
         </div>`;
     }
     return;
@@ -343,22 +360,22 @@ function renderOmniAnswer() {
     cardClass = "verdict-wheel";
     badgeClass = "badge-wheel";
     badgeLabel = "✓ Prebuilt Wheel";
-    summary = `has a prebuilt wheel for <strong>${esc(pname)}</strong> on <strong>Python ${esc(py)}</strong> · Installs in ~2s (no compiler needed)`;
+    summary = `has a prebuilt wheel for <strong>${esc(pname)}</strong> on <strong>Python ${esc(py)}</strong>`;
   } else if (res === "bundled") {
     cardClass = "verdict-bundled";
     badgeClass = "badge-bundled";
     badgeLabel = "📦 Bundled Pyodide";
-    summary = `is pre-compiled in Pyodide distribution for <strong>Python ${esc(py)}</strong> (runs in browser WebAssembly)`;
+    summary = `has no wheel on PyPI for Pyodide, but Pyodide's own distribution builds it for <strong>Python ${esc(py)}</strong>`;
   } else if (res === "source") {
     cardClass = "verdict-source";
     badgeClass = "badge-source";
     badgeLabel = "⚡ Builds from Source";
-    summary = `compiles on install for <strong>${esc(pname)}</strong> (Python ${esc(py)}) · Needs C compiler & headers (30–90s build)`;
+    summary = `has no wheel for <strong>${esc(pname)}</strong> (Python ${esc(py)}), so pip builds it from source: that needs a compiler and the package's build dependencies`;
   } else if (res === "missing") {
     cardClass = "verdict-missing";
     badgeClass = "badge-missing";
     badgeLabel = "✕ Cannot Install";
-    summary = `has no prebuilt binary and cannot be installed on <strong>${esc(pname)}</strong> (Python ${esc(py)})`;
+    summary = `has no wheel for <strong>${esc(pname)}</strong> (Python ${esc(py)}) and no source distribution, so pip can't install it`;
   } else {
     cardClass = "verdict-unknown";
     badgeClass = "badge-unknown";
@@ -381,7 +398,7 @@ function renderOmniAnswer() {
       </div>
       <div class="verdict-bar-actions">
         <a href="${pypiUrl}" target="_blank" rel="noopener" class="vbtn vbtn-ext" title="View release on PyPI">PyPI ↗</a>
-        <button type="button" class="vbtn vbtn-drawer" data-pkg="${esc(p.name)}" title="Inspect all 42 platform targets in side drawer">Inspect 42 Targets ⤢</button>
+        <button type="button" class="vbtn vbtn-drawer" data-pkg="${esc(p.name)}" title="Inspect all ${fmt(state.data.targets.length)} platform targets in side drawer">Inspect ${fmt(state.data.targets.length)} Targets ⤢</button>
         <button type="button" class="vbtn vbtn-filter" data-pl="${esc(pl)}" data-py="${esc(py)}" title="Filter gap packages on this platform below">Filter Gaps ↓</button>
         <button type="button" class="vbtn vbtn-repro btn-copy-repro" data-cmd="${esc(cliCmd)}" title="Copy CLI reproduction command">Copy CLI</button>
       </div>
@@ -392,7 +409,7 @@ function renderOmniAnswer() {
       <span class="mini-summary-pill ${badgeClass}">${badgeLabel}</span>
       <span class="mini-summary-text"><strong>${esc(p.name)}</strong> on <strong>${esc(pname)}</strong> (Python ${esc(py)})</span>
       <div class="mini-summary-actions">
-        <button type="button" class="vbtn vbtn-drawer mini-btn" data-pkg="${esc(p.name)}" title="Inspect all 42 platform targets in side drawer">Inspect 42 ⤢</button>
+        <button type="button" class="vbtn vbtn-drawer mini-btn" data-pkg="${esc(p.name)}" title="Inspect all ${fmt(state.data.targets.length)} platform targets in side drawer">Inspect ${fmt(state.data.targets.length)} ⤢</button>
         <button type="button" class="vbtn vbtn-filter mini-btn" data-pl="${esc(pl)}" data-py="${esc(py)}" title="Filter gap packages on this platform below">Filter Gaps ↓</button>
         <a href="${pypiUrl}" target="_blank" rel="noopener" class="vbtn vbtn-ext mini-btn" title="View release on PyPI">PyPI ↗</a>
       </div>`;
@@ -440,15 +457,13 @@ function renderLeaderboard() {
       unknown: total ? (100 * unknown) / total : 0,
     };
 
-    // Trend delta from history
-    const targetLabel = `${state.python} ${pl}`;
-    const prev = previousSummary(targetLabel);
-    let delta = null;
-    if (prev && typeof prev.wheel === "number" && state.history.length > 1) {
-      const prevTotal = state.history[state.history.length - 2].packages || total;
-      const prevOk = prev.wheel + (prev.bundled ?? 0);
-      delta = ok - prevOk;
-    }
+    // Change since the previous scan: only over all packages (history has no compiled-only counts), and not across a
+    // wheelgap upgrade (platformStats leaves it at 0 then), so the number is like for like.
+    const targetLabel = state.data.targets[idx].label;
+    const prev = previousScan();
+    const delta = state.showCompiledOnly
+      ? 0
+      : platformStats(state.data.summary[targetLabel], prev?.summary?.[targetLabel] ?? null, total, prev?.wheelgap, state.data.wheelgap).delta;
 
     const series = coverageSeries(targetLabel);
 
@@ -473,20 +488,23 @@ function renderLeaderboard() {
   // Sort: WORST SERVED FIRST (lowest percent / highest gaps)
   list.sort((a, b) => a.percent - b.percent || b.gaps - a.gaps);
 
-  // Render cards
+  // Render cards. The tag compares each platform's gaps with the best-served platform's for this Python, so it says
+  // how far behind a platform is, not just where it ranks.
+  const fewest = Math.max(1, Math.min(...list.map((x) => x.gaps)));
   const cardsHtml = list.map((item, index) => {
     const rank = index + 1;
     const isSelected = item.platform === state.platform;
     const selectedClass = isSelected ? " active-platform-card" : "";
 
-    let severityClass = "sev-critical";
-    let severityTag = `🚨 #${rank} Worst Served`;
-    if (rank > 4) {
-      severityClass = "sev-good";
-      severityTag = `✅ #${rank} Well Served`;
-    } else if (rank > 2) {
+    const behind = item.gaps / fewest;
+    let severityClass = "sev-good";
+    let severityTag = `✅ #${rank} · Close to the best`;
+    if (behind >= 2) {
+      severityClass = "sev-critical";
+      severityTag = rank === 1 ? `🚨 #1 · Worst Served` : `🚨 #${rank} · ${behind.toFixed(1)}× the gaps`;
+    } else if (behind >= 1.3) {
       severityClass = "sev-warning";
-      severityTag = `⚠️ #${rank} High Gaps`;
+      severityTag = `⚠️ #${rank} · ${behind.toFixed(1)}× the gaps`;
     }
 
     const deltaBadge = item.delta
@@ -699,7 +717,7 @@ function renderGaps() {
             </div>
             <div class="inline-targets-pills">
               <span class="inline-target-pill ${isMissing ? "pill-missing" : "pill-source"}">This Platform (${esc(state.platform)}): ${isMissing ? "✕ cannot install" : "⚡ builds from source"}</span>
-              <span class="inline-target-pill pill-wheel">Pure Python: ${p.pure ? "Yes (installs anywhere)" : "No (compiled code)"}</span>
+              <span class="inline-target-pill pill-wheel">Pure Python wheel: ${p.pure ? "yes" : "no (compiled code)"}</span>
               <span class="inline-target-pill pill-wheel">Rank: #${esc(p.rank)}</span>
             </div>
             <div class="inline-actions-row">
@@ -707,7 +725,7 @@ function renderGaps() {
               <div class="inline-btns">
                 <button type="button" class="vbtn vbtn-repro btn-copy-repro" data-cmd="${esc(cliCmd)}">Copy CLI</button>
                 <a href="${pypiUrl}" target="_blank" rel="noopener" class="vbtn vbtn-ext">PyPI ↗</a>
-                <button type="button" class="vbtn vbtn-drawer" data-pkg="${esc(p.name)}">Full 42 Targets ⤢</button>
+                <button type="button" class="vbtn vbtn-drawer" data-pkg="${esc(p.name)}">All ${fmt(state.data.targets.length)} Targets ⤢</button>
               </div>
             </div>
           </div>
@@ -780,7 +798,7 @@ function badgeMarkdown(p) {
 }
 
 // Deep Package Inspection (used in drawer and card)
-function buildPackageCardHTML(p, extra = null) {
+function buildPackageCardHTML(p, extra = null, pinNote = "") {
   const pys = pythons();
   const platforms = Object.keys(PLATFORM_NAMES).filter((pl) => state.data.targets.some((t) => t.platform === pl));
   const cell = (py, pl) => {
@@ -796,8 +814,8 @@ function buildPackageCardHTML(p, extra = null) {
     <div style="display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:8px">
       <h3>${esc(p.name)} <span class="ver" style="font-weight:normal;color:var(--text-muted);font-size:0.9rem">${esc(p.version ?? "")}</span></h3>
       <span style="font:600 0.8rem var(--mono);color:var(--text-muted)">#${esc(p.rank)} · ${formatDownloads(p.downloads)} downloads</span>
-    </div>
-    <p class="sub">${p.pure ? "Pure Python: prebuilt wheel installs everywhere." : "Contains compiled extensions."}${p.error ? ` · lookup error: ${esc(p.error)}` : ""}
+    </div>${pinNote}
+    <p class="sub">${p.pure ? "Ships a pure Python wheel." : "Contains compiled extensions."}${p.error ? ` · lookup error: ${esc(p.error)}` : ""}
       · <a href="https://pypi.org/project/${encodeURIComponent(p.name)}/${encodeURIComponent(p.version ?? "")}/" target="_blank" rel="noopener">PyPI release ↗</a>
       · <a href="p/${esc(canonicalName(p.name))}/">Package page ↗</a>
     </p>
@@ -822,19 +840,29 @@ function buildPackageCardHTML(p, extra = null) {
 }
 
 function renderLookup(query, extra = null) {
-  const q = canonicalName(query.trim());
+  const [base, pinned] = splitSpec(query);
+  const q = canonicalName(base);
   if (!q) {
     $("lookup").innerHTML = "";
     return;
   }
   const p = state.data.packages.find((x) => canonicalName(x.name) === q);
   if (!p) {
-    $("lookup").innerHTML = `<div class="card"><p class="sub">${esc(query)} isn't in the top ${fmt(state.data.packages.length)}.
-      Check it locally: <code>uvx wheelgap ${esc(query.trim())} -t all</code></p></div>`;
+    const name = query.trim();
+    $("lookup").innerHTML = isPackageSpec(name)
+      ? `<div class="card"><p class="sub">${esc(base.trim())} isn't in the top ${fmt(state.data.packages.length)}.
+      Check it, or any package at a pinned version, locally: <code>uvx wheelgap ${esc(name)} -t all</code></p></div>`
+      : `<div class="card"><p class="sub">That isn't a valid package name.</p></div>`; // don't echo arbitrary URL text
     return;
   }
+  // A pinned version the scan didn't check: say which release the card is for, and how to check the pinned one.
+  const spec = query.trim();
+  const pinNote = pinned !== null && pinned !== p.version && isPackageSpec(spec)
+    ? `<p class="sub">The scan checks the latest release, ${esc(p.version ?? "")}, not ${esc(pinned)}. Check that one locally:
+      <code>uvx wheelgap ${esc(spec)} -t all</code></p>`
+    : "";
 
-  $("lookup").innerHTML = buildPackageCardHTML(p, extra);
+  $("lookup").innerHTML = buildPackageCardHTML(p, extra, pinNote);
 
   const copy = $("lookup").querySelector(".copy-badge");
   if (copy) {
@@ -1077,7 +1105,10 @@ function updateSearchAutocomplete(value) {
 
 // Theme management
 function initTheme() {
-  const stored = localStorage.getItem("wheelgap-theme");
+  let stored = null;
+  try {
+    stored = localStorage.getItem("wheelgap-theme");
+  } catch {}
   const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
   const isDark = stored ? stored === "dark" : prefersDark;
 
@@ -1095,7 +1126,9 @@ function initTheme() {
     const cur = document.documentElement.getAttribute("data-theme");
     const next = cur === "dark" ? "light" : "dark";
     document.documentElement.setAttribute("data-theme", next);
-    localStorage.setItem("wheelgap-theme", next);
+    try {
+      localStorage.setItem("wheelgap-theme", next);
+    } catch {}
     if ($("theme-icon-sun")) $("theme-icon-sun").style.display = next === "dark" ? "none" : "block";
     if ($("theme-icon-moon")) $("theme-icon-moon").style.display = next === "dark" ? "block" : "none";
   });
@@ -1145,8 +1178,10 @@ async function main() {
     state.currentPage = 1;
     populateOmniSelects();
     renderLeaderboard();
+    renderPlatforms();
     renderGaps();
     renderOmniAnswer();
+    renderLookup($("search").value); // its "Why?" command names the selected platform
     writeHash();
     scrollToGaps();
   });
@@ -1171,6 +1206,7 @@ async function main() {
     state.platform = e.target.value;
     state.currentPage = 1;
     renderLeaderboard();
+    renderPlatforms();
     renderGaps();
     renderOmniAnswer();
     renderLookup($("search").value);
@@ -1297,6 +1333,7 @@ async function main() {
       state.currentPage = 1;
       populateOmniSelects();
       renderAll();
+      renderLookup($("search").value);
       scrollToGaps();
       return;
     }
@@ -1409,7 +1446,7 @@ async function main() {
   // Omni Checker Clear All & Reset
   $("omni-reset-btn")?.addEventListener("click", () => {
     $("search").value = "";
-    state.python = "3.13";
+    state.python = pythons()[0];
     state.platform = "musl-aarch64";
     state.currentPage = 1;
     populateOmniSelects();

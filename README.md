@@ -6,6 +6,8 @@
 
 A package without a wheel for your platform is compiled from source on install (slow, and it needs a compiler), or can't be installed at all. This site shows where those gaps are, package by package.
 
+The site's design, Precision UI, is by [Kunal Shah (@kunalkshah1)](https://github.com/kunalkshah1), the winner of the [redesign challenge](https://github.com/wheelgap/wheelgap/discussions/154).
+
 ## How it works
 
 - Every night, [`.github/workflows/scan.yml`](.github/workflows/scan.yml) runs [wheelgap](https://github.com/wheelgap/wheelgap)'s scanner (`python -m wheelgap.scan`) over the top packages from [top-pypi-packages](https://hugovk.dev/top-pypi-packages/). It checks each package's latest release against every platform.

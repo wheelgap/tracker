@@ -42,7 +42,7 @@
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
           <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
         </svg>
-        <span class="cmd-trigger-text">Search 5,000 packages…</span>
+        <span class="cmd-trigger-text">Search packages…</span>
         <kbd class="shortcut-kbd"><abbr title="Command or Control">⌘</abbr>K</kbd>
       </button>
 
@@ -147,12 +147,12 @@
           <span class="legend-tag tag-source"><i class="sw sw-source" aria-hidden="true"></i> builds from source</span>
           <span class="legend-tag tag-missing"><i class="sw sw-missing" aria-hidden="true"></i> cannot install</span>
         </div>
+        <p class="section-sub spark-note" id="trend-note"></p>
 
         <!-- Backward Compatibility Hooks for existing tests -->
         <ol class="platforms visually-hidden" id="platforms" aria-hidden="true"></ol>
         <section id="trend-section" class="visually-hidden" aria-hidden="true">
           <h3 id="trend-title">Coverage over time</h3>
-          <p id="trend-note"></p>
           <ol id="trends"></ol>
         </section>
       </section>
@@ -181,7 +181,7 @@
         </div>
 
         <div class="omni-collapsible-body" id="omni-body">
-          <form class="omni-form" id="search-form" onsubmit="return false">
+          <form class="omni-form" id="search-form">
             <!-- Package Search & Autocomplete with Clear Button (No heavy 5000-option datalist) -->
             <div class="omni-field omni-pkg-field">
               <label for="search" class="omni-label">Package Name</label>
@@ -345,11 +345,19 @@
         </aside>
       </div>
 
+      <!-- Build lab (site/lab.js fills it in from data/lab.json) -->
+      <section class="panel-card lab-panel" aria-labelledby="lab-title" id="lab-section" hidden>
+        <h2 id="lab-title">Build lab: no wheel, but does it build?</h2>
+        <p class="section-sub" id="lab-note"></p>
+        <ul class="lab-summary" id="lab-summary"></ul>
+        <div class="matrix-scroll"><table class="matrix lab-table" id="lab-table"></table></div>
+      </section>
+
       <!-- Call to Action Banner -->
       <section class="cta-banner">
         <div class="cta-header">
           <h2>Check your own project</h2>
-          <p>The same verification runs directly on your local lockfile for the exact versions you pin:</p>
+          <p><strong><a href="check/">Paste a GitHub repo</a></strong> to see which of its dependencies have no wheel for the platforms it ships to, and the release that fixes each. It runs in your browser. Or run the same check on your lockfile, for exactly the versions you pin:</p>
         </div>
         <div class="command-block">
           <code>uvx wheelgap -p 3.13 -t linux-aarch64,musl-aarch64 --explain</code>
@@ -375,6 +383,7 @@
           <a href="https://github.com/wheelgap/wheelgap/issues/new?template=bug_report.yml">Report a wrong result</a>
         </div>
       </div>
+      <p class="footer-credit">Design by <a href="https://github.com/kunalkshah1">Kunal Shah (@kunalkshah1)</a>, the winner of the tracker's <a href="https://github.com/wheelgap/wheelgap/discussions/154">redesign challenge</a>.</p>
     </footer>
   </div>
 
@@ -442,7 +451,7 @@
             <span class="tile-icon">🌐</span>
             <div class="tile-content">
               <strong>Download Full Coverage CSV</strong>
-              <span>All 5,000 packages across all 42 targets (full dataset)</span>
+              <span>Every package across every target (full dataset)</span>
             </div>
           </a>
         </div>
@@ -453,5 +462,6 @@
   <!-- Scripts -->
   <script src="logic.js"></script>
   <script src="app.js"></script>
+  <script src="lab.js"></script>
 </body>
 </html>

