@@ -51,6 +51,7 @@ import tempfile
 import time
 import urllib.request
 import zipfile
+import zlib
 from collections.abc import Callable
 from pathlib import Path
 
@@ -158,9 +159,16 @@ def build_env() -> dict[str, str]:
 
 
 def wheel_members(wheel: Path) -> dict[str, str]:
-    """Each file in the wheel, by name: its sha256. For saying *which* files differ when two builds don't agree."""
-    with zipfile.ZipFile(wheel) as z:
-        return {i.filename: hashlib.sha256(z.read(i)).hexdigest() for i in z.infolist() if not i.is_dir()}
+    """Each file in the wheel, by name: its sha256 (streamed), or {} if the wheel can't be read. For saying *which*
+    files differ when two builds don't agree; a wheel that isn't a readable zip still gets its result."""
+    try:
+        with zipfile.ZipFile(wheel) as z:
+            return {
+                i.filename: hashlib.file_digest(z.open(i), "sha256").hexdigest() for i in z.infolist() if not i.is_dir()
+            }
+    except Exception as e:  # noqa: BLE001  (diagnostics only: never cost the build its result)
+        print(f"gap_wheels: couldn't list the wheel's files: {e}", file=sys.stderr)
+        return {}
 
 
 def run_build(name: str, version: str, attempt: int, work: Path, members: dict[str, str] | None = None) -> dict:
@@ -293,7 +301,7 @@ def problems(result: object, job: dict) -> list[str]:
 
 
 MEMBER = re.compile(r"[A-Za-z0-9._+/-]{1,200}", re.ASCII)
-MAX_MEMBERS = 20_000
+MAX_MEMBERS = 10_000
 MAX_MEMBERS_BYTES = 2_000_000
 
 
@@ -398,7 +406,7 @@ def cmd_merge(args: argparse.Namespace) -> int:
         if mpath.is_file() and mpath.stat().st_size <= MAX_MEMBERS_BYTES:
             try:
                 members[(job["id"], job["attempt"])] = json.loads(mpath.read_text(encoding="utf-8"))
-            except (UnicodeDecodeError, ValueError):
+            except Exception:  # noqa: BLE001,S110  (untrusted diagnostics, e.g. nesting deep enough for RecursionError)
                 pass
     verified, report = verify(jobs, results, pypi_sdists, members)
     runs_file = Path(args.results) / "runs.json"
@@ -550,15 +558,24 @@ def fetch_result(repo: str, run: dict) -> tuple[bytes, bytes | None] | None:
     archive = gh(["api", f"repos/{repo}/actions/artifacts/{int(artifacts[0]['id'])}/zip"])
     try:
         with zipfile.ZipFile(io.BytesIO(archive)) as z:
-            info = z.getinfo("result.json")
-            if info.file_size > MAX_RESULT_BYTES:
+            result = bounded(z, "result.json", MAX_RESULT_BYTES)
+            if result is None:
                 return None
-            names = z.namelist()
-            extra = z.getinfo("members.json") if "members.json" in names else None
-            members = z.read(extra) if extra is not None and extra.file_size <= MAX_MEMBERS_BYTES else None
-            return z.read(info), members
-    except (zipfile.BadZipFile, KeyError):
+            try:
+                members = bounded(z, "members.json", MAX_MEMBERS_BYTES) if "members.json" in z.namelist() else None
+            except Exception:  # noqa: BLE001  (a bad members.json never costs the result)
+                members = None
+            return result, members
+    except (zipfile.BadZipFile, KeyError, zlib.error, EOFError, RuntimeError, NotImplementedError, OSError):
         return None
+
+
+def bounded(z: zipfile.ZipFile, name: str, limit: int) -> bytes | None:
+    """The member's bytes, reading at most limit + 1 whatever size it declares (a zip bomb stops there), or None
+    if it's bigger than limit."""
+    with z.open(name) as f:
+        data = f.read(limit + 1)
+    return None if len(data) > limit else data
 
 
 def cmd_collect(args: argparse.Namespace) -> int:

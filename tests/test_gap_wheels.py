@@ -330,6 +330,26 @@ class Members(unittest.TestCase):
         many = {f"f{i}": a for i in range(8)}
         self.assertTrue(gap_wheels.differing(many, {}).endswith("(+3 more)"))
 
+    def test_an_unreadable_wheel_has_no_members_but_still_a_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            wheel = Path(tmp) / "x-1.0-py3-none-any.whl"
+            wheel.write_bytes(b"not a zip")
+            self.assertEqual(gap_wheels.wheel_members(wheel), {})
+
+    def test_deeply_nested_members_json_doesnt_crash_merge(self):
+        jobs = gap_wheels.plan(BUILDS, 1, {"tiktoken"})
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / "plan.json").write_text(json.dumps(jobs))
+            for job in jobs:
+                d = tmp / "r" / f"result-{job['id']}-{job['attempt']}"
+                d.mkdir(parents=True)
+                (d / "result.json").write_text(json.dumps(good(job)))
+                (d / "members.json").write_text("[" * 200_000 + "]" * 200_000)
+            with mock.patch.object(gap_wheels, "pypi_sdists", lambda n, v: {"tiktoken-0.14.0.tar.gz": "a" * 64}):
+                gap_wheels.main(["merge", str(tmp / "r"), "--plan", str(tmp / "plan.json"), "--out", str(tmp / "m.json")])
+            self.assertEqual(len(json.loads((tmp / "m.json").read_text())["wheels"]), 1)
+
     def test_differing_ignores_untrusted_junk(self):
         good = {"pkg/_x.so": "a" * 64}
         for bad in (None, [], {"a|b": "a" * 64}, {"x": "nope"}, {"`x`": "a" * 64}, {"x" * 201: "a" * 64}):
