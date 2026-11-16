@@ -1,5 +1,6 @@
 """Offline tests for scripts/gap_wheels.py: the plan, the merge job's checks on untrusted results, and the verdicts."""
 
+import hashlib
 import io
 import json
 import subprocess
@@ -273,7 +274,9 @@ class Runs(unittest.TestCase):
             return buf.getvalue()
 
         listing = json.dumps({"artifacts": [{"id": 5, "name": "result", "size_in_bytes": 300}]}).encode()
-        for archive, expected in ((zipped({"result.json": "{}"}), b"{}"), (zipped({"other.json": "{}"}), None),
+        for archive, expected in ((zipped({"result.json": "{}"}), (b"{}", None)), (zipped({"other.json": "{}"}), None),
+                                  (zipped({"result.json": "{}", "members.json": "[]"}), (b"{}", b"[]")),
+                                  (zipped({"result.json": "{}", "members.json": "x" * 2_000_001}), (b"{}", None)),
                                   (zipped({"result.json": "x" * 20_000}), None), (b"not a zip", None)):  # fmt: skip
             with self.subTest(expected), mock.patch.object(gap_wheels, "gh", side_effect=[listing, archive]):
                 self.assertEqual(gap_wheels.fetch_result("o/r", {"id": 7}), expected)
@@ -289,7 +292,7 @@ class Runs(unittest.TestCase):
             (tmp / "plan.json").write_text(json.dumps(self.jobs))
             with (
                 mock.patch.object(gap_wheels, "list_runs", return_value=runs),
-                mock.patch.object(gap_wheels, "fetch_result", lambda repo, run: json.dumps(results[run["id"]]).encode()),
+                mock.patch.object(gap_wheels, "fetch_result", lambda repo, run: (json.dumps(results[run["id"]]).encode(), b"{}")),
             ):
                 gap_wheels.main(["collect", "--plan", str(tmp / "plan.json"), "--batch", "99-1", "--repo", "o/r",
                                  "--sha", SHA, "--since", "2026-11-16T02:00:00Z", "--results", str(tmp / "r")])  # fmt: skip
@@ -307,6 +310,46 @@ class Runs(unittest.TestCase):
             args = {"--batch": "99-1", "--since": "2026-11-16T02:00:00Z", "--repo": "o/r", "--sha": SHA, flag: value}
             with self.subTest(flag), self.assertRaises(SystemExit):
                 gap_wheels.main(["collect", "--plan", "x", "--results", "r", *[x for kv in args.items() for x in kv]])
+
+
+class Members(unittest.TestCase):
+    def test_wheel_members(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            wheel = Path(tmp) / "x-1.0-py3-none-any.whl"
+            with zipfile.ZipFile(wheel, "w") as z:
+                z.writestr("x/__init__.py", "")
+                z.writestr("x/", "")
+            self.assertEqual(gap_wheels.wheel_members(wheel), {"x/__init__.py": hashlib.sha256(b"").hexdigest()})
+
+    def test_differing_names_the_files(self):
+        a, b, c = "a" * 64, "b" * 64, "c" * 64
+        first = {"pkg/_x.so": a, "pkg/__init__.py": b, "pkg-1.dist-info/RECORD": c}
+        second = {"pkg/_x.so": b, "pkg/__init__.py": b, "pkg-1.dist-info/RECORD": a, "pkg/extra.py": a}
+        self.assertEqual(gap_wheels.differing(first, second),
+                         ", in `pkg-1.dist-info/RECORD`, `pkg/_x.so`, `pkg/extra.py`")  # fmt: skip
+        many = {f"f{i}": a for i in range(8)}
+        self.assertTrue(gap_wheels.differing(many, {}).endswith("(+3 more)"))
+
+    def test_differing_ignores_untrusted_junk(self):
+        good = {"pkg/_x.so": "a" * 64}
+        for bad in (None, [], {"a|b": "a" * 64}, {"x": "nope"}, {"`x`": "a" * 64}, {"x" * 201: "a" * 64}):
+            with self.subTest(bad):
+                self.assertEqual(gap_wheels.differing(good, bad), "")
+
+    def test_merge_reports_which_files_differ(self):
+        jobs = gap_wheels.plan(BUILDS, 1, {"tiktoken"})
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / "plan.json").write_text(json.dumps(jobs))
+            for job, sha, so in ((jobs[0], "b" * 64, "1" * 64), (jobs[1], "c" * 64, "2" * 64)):
+                d = tmp / "r" / f"result-{job['id']}-{job['attempt']}"
+                d.mkdir(parents=True)
+                (d / "result.json").write_text(json.dumps(good(job, sha256=sha)))
+                (d / "members.json").write_text(json.dumps({"tiktoken/_tiktoken.pyd": so, "tiktoken/core.py": "3" * 64}))
+            with mock.patch.object(gap_wheels, "pypi_sdists", lambda n, v: {"tiktoken-0.14.0.tar.gz": "a" * 64}):
+                gap_wheels.main(["merge", str(tmp / "r"), "--plan", str(tmp / "plan.json"), "--out", str(tmp / "m.json"),
+                                 "--summary", str(tmp / "s.md")])  # fmt: skip
+            self.assertIn("the two builds differ, in `tiktoken/_tiktoken.pyd` |", (tmp / "s.md").read_text())
 
 
 class Dispatch(unittest.TestCase):

@@ -55,7 +55,9 @@ jobs:
         if: always()
         with:
           name: result
-          path: result.json
+          path: |
+            result.json
+            members.json
           if-no-files-found: ignore
           retention-days: 7
 
@@ -85,6 +87,8 @@ jobs:
         if: always()
         with:
           name: result
-          path: ${{ runner.temp }}/out/result.json
+          path: |
+            ${{ runner.temp }}/out/result.json
+            ${{ runner.temp }}/out/members.json
           if-no-files-found: ignore
           retention-days: 7

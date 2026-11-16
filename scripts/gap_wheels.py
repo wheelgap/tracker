@@ -157,7 +157,13 @@ def build_env() -> dict[str, str]:
     return env
 
 
-def run_build(name: str, version: str, attempt: int, work: Path) -> dict:
+def wheel_members(wheel: Path) -> dict[str, str]:
+    """Each file in the wheel, by name: its sha256. For saying *which* files differ when two builds don't agree."""
+    with zipfile.ZipFile(wheel) as z:
+        return {i.filename: hashlib.sha256(z.read(i)).hexdigest() for i in z.infolist() if not i.is_dir()}
+
+
+def run_build(name: str, version: str, attempt: int, work: Path, members: dict[str, str] | None = None) -> dict:
     """Download the sdist, build the wheel from a fixed folder, hash it, and (first attempt) install it from a local
     folder into a fresh venv with nothing compiled. Fields left None mean that step didn't happen."""
     fields: dict = {"sdist": None, "sdist_sha256": None, "wheel": None, "sha256": None, "installs": None}
@@ -191,6 +197,8 @@ def run_build(name: str, version: str, attempt: int, work: Path) -> dict:
         print(f"gap_wheels: expected one wheel, found {len(wheels)}", file=sys.stderr)
         return fields
     fields.update(wheel=wheels[0].name, sha256=sha256(wheels[0]))
+    if members is not None:
+        members.update(wheel_members(wheels[0]))
     if attempt == 1:
         venv = work / "fresh"
         subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True, timeout=INSTALL_TIMEOUT)
@@ -221,11 +229,14 @@ def cmd_build(args: argparse.Namespace) -> int:
     if (why := build_lab.interpreter_problem(target)) is not None:
         print(f"gap_wheels: this Python isn't {target}'s: {why}", file=sys.stderr)
         return 3
+    members: dict[str, str] = {}
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-        fields = run_build(args.name, args.version, args.attempt, Path(tmp))
+        fields = run_build(args.name, args.version, args.attempt, Path(tmp), members)
     result = {"schema": SCHEMA, "name": args.name, "version": args.version, "target": target,
               "attempt": args.attempt, "runner": args.runner, **fields}  # fmt: skip
     Path(args.out).write_text(json.dumps(result) + "\n", encoding="utf-8")
+    # Beside the result, only to say which files differ when two builds don't agree; never part of a verdict.
+    Path(args.out).with_name("members.json").write_text(json.dumps(members, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(result, indent=1))
     return 0
 
@@ -281,12 +292,38 @@ def problems(result: object, job: dict) -> list[str]:
     return out
 
 
+MEMBER = re.compile(r"[A-Za-z0-9._+/-]{1,200}", re.ASCII)
+MAX_MEMBERS = 20_000
+MAX_MEMBERS_BYTES = 2_000_000
+
+
+def differing(first: object, second: object, shown: int = 5) -> str:
+    """", in NAME, NAME (+N more)": the wheel files whose sha256 differs between two untrusted members.json, or ""
+    when either is missing or malformed. Diagnostic text only: it never changes a verdict."""
+    def ok(m: object) -> bool:
+        return (isinstance(m, dict) and len(m) <= MAX_MEMBERS
+                and all(isinstance(k, str) and MEMBER.fullmatch(k) and isinstance(v, str) and SHA256.fullmatch(v)
+                        for k, v in m.items()))  # fmt: skip
+
+    if not (ok(first) and ok(second)):
+        return ""
+    names = sorted(k for k in first.keys() | second.keys() if first.get(k) != second.get(k))
+    if not names:
+        return ""
+    more = f" (+{len(names) - shown} more)" if len(names) > shown else ""
+    return ", in " + ", ".join(f"`{n}`" for n in names[:shown]) + more
+
+
 def verify(
-    jobs: list[dict], results: dict[tuple[str, int], object], published: Callable[[str, str], dict[str, str] | None]
+    jobs: list[dict],
+    results: dict[tuple[str, int], object],
+    published: Callable[[str, str], dict[str, str] | None],
+    members: dict[tuple[str, int], object] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """(verified wheels, every pair with its verdict) from the plan's jobs, the results by (id, attempt), and a lookup
     of PyPI's sdists for a release, {filename: sha256} or None if PyPI couldn't be asked. It's only asked about pairs
     whose two builds agree."""
+    members = members or {}
     verified, report = [], []
     by_id: dict[str, dict[int, dict]] = {}
     for job in jobs:
@@ -308,7 +345,7 @@ def verify(
             second["sha256"],
             second["sdist_sha256"],
         ):
-            verdict = "the two builds differ"
+            verdict = "the two builds differ" + differing(members.get((pid, 1)), members.get((pid, 2)))
         elif (sdists := published(job["name"], job["version"])) is None:
             verdict = "couldn't check the sdist against PyPI"
         elif sdists.get(first["sdist"]) != first["sdist_sha256"]:
@@ -352,11 +389,18 @@ def read_result(path: Path) -> object:
 def cmd_merge(args: argparse.Namespace) -> int:
     jobs = json.loads(Path(args.plan).read_text(encoding="utf-8"))
     results: dict[tuple[str, int], object] = {}
+    members: dict[tuple[str, int], object] = {}
     for job in jobs:
         path = Path(args.results) / f"result-{job['id']}-{job['attempt']}" / "result.json"
         if path.is_file():
             results[(job["id"], job["attempt"])] = read_result(path)
-    verified, report = verify(jobs, results, pypi_sdists)
+        mpath = path.with_name("members.json")
+        if mpath.is_file() and mpath.stat().st_size <= MAX_MEMBERS_BYTES:
+            try:
+                members[(job["id"], job["attempt"])] = json.loads(mpath.read_text(encoding="utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                pass
+    verified, report = verify(jobs, results, pypi_sdists, members)
     runs_file = Path(args.results) / "runs.json"
     if runs_file.is_file():  # written by collect, which is trusted
         urls = json.loads(runs_file.read_text(encoding="utf-8"))
@@ -388,7 +432,7 @@ BATCH = re.compile(r"[0-9]{1,20}-[0-9]{1,4}", re.ASCII)
 SINCE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", re.ASCII)  # as the API writes created_at
 REPO = re.compile(r"[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}", re.ASCII)
 SHA = re.compile(r"[0-9a-f]{40}", re.ASCII)
-MAX_ARTIFACT_BYTES = 100_000
+MAX_ARTIFACT_BYTES = 3_000_000
 
 
 def title(batch: str, job: dict) -> str:
@@ -497,8 +541,8 @@ def list_runs(repo: str, since: str) -> list[dict]:
     return [run for page in json.loads(pages) for run in page.get("workflow_runs", [])]
 
 
-def fetch_result(repo: str, run: dict) -> bytes | None:
-    """The run's `result` artifact's result.json, or None."""
+def fetch_result(repo: str, run: dict) -> tuple[bytes, bytes | None] | None:
+    """The run's `result` artifact's result.json and members.json (None if it has none), or None."""
     listing = json.loads(gh(["api", f"repos/{repo}/actions/runs/{int(run['id'])}/artifacts?name=result"]))
     artifacts = [a for a in listing.get("artifacts", []) if a.get("name") == "result" and not a.get("expired")]
     if len(artifacts) != 1 or int(artifacts[0].get("size_in_bytes", 0)) > MAX_ARTIFACT_BYTES:
@@ -509,7 +553,10 @@ def fetch_result(repo: str, run: dict) -> bytes | None:
             info = z.getinfo("result.json")
             if info.file_size > MAX_RESULT_BYTES:
                 return None
-            return z.read(info)
+            names = z.namelist()
+            extra = z.getinfo("members.json") if "members.json" in names else None
+            members = z.read(extra) if extra is not None and extra.file_size <= MAX_MEMBERS_BYTES else None
+            return z.read(info), members
     except (zipfile.BadZipFile, KeyError):
         return None
 
@@ -534,9 +581,11 @@ def cmd_collect(args: argparse.Namespace) -> int:
             print(f"build {pid}-{attempt}: {run}", file=sys.stderr)
             continue
         urls[f"{pid}-{attempt}"] = f"https://github.com/{args.repo}/actions/runs/{int(run['id'])}"
-        if (data := retry(lambda run=run: fetch_result(args.repo, run))) is not None:
+        if (got := retry(lambda run=run: fetch_result(args.repo, run))) is not None:
             (out / f"result-{pid}-{attempt}").mkdir(parents=True, exist_ok=True)
-            (out / f"result-{pid}-{attempt}" / "result.json").write_bytes(data)
+            (out / f"result-{pid}-{attempt}" / "result.json").write_bytes(got[0])
+            if got[1] is not None:
+                (out / f"result-{pid}-{attempt}" / "members.json").write_bytes(got[1])
     out.mkdir(parents=True, exist_ok=True)
     (out / "runs.json").write_text(json.dumps(urls) + "\n", encoding="utf-8")
     return 0
