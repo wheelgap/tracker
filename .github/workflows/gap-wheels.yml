@@ -9,14 +9,14 @@ name: Gap wheels (private)
 
 on:
   schedule:
-    # Mondays: after Sunday's build lab has committed, and well clear of the nightly scan's commit (dispatch stops if
-    # main moves mid-batch).
+    # Mondays, after Sunday's build lab. Scheduled runs here often start hours late, so a batch can overlap the nightly
+    # scan's commit: dispatch then stops loudly and collect still verifies the builds already started.
     - cron: "17 1 * * 1"
   workflow_dispatch:
     inputs:
       max:
         description: Most pairs this run (each is built twice)
-        default: "50"
+        default: "200"
       only:
         description: Just these packages, comma-separated
         default: ""
@@ -44,7 +44,7 @@ jobs:
           persist-credentials: false
       - id: plan
         env:
-          MAX: ${{ inputs.max || '50' }}
+          MAX: ${{ inputs.max || '200' }} # every clean pair, so none is left out week after week
           ONLY: ${{ inputs.only }}
         run: |
           # The batch is fixed here, so re-running only a later job still finds this batch's build runs.

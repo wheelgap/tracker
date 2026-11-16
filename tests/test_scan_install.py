@@ -109,3 +109,14 @@ def test_check_runs_wheelgap_outside_the_repo(monkeypatch):
     monkeypatch.setattr(scan_install.subprocess, "run", run)
     scan_install.check({"name": "sample", "version": "1.0"}, [target("3.14", "win-arm64")], float("inf"))
     assert seen and seen[0] is not None and not (Path(seen[0]) / "pyproject.toml").exists()
+
+
+def test_scan_checks_only_the_314_lab_targets(tmp_path, monkeypatch):
+    path = tmp_path / "coverage.json"
+    labels = ["3.14 win-arm64", "3.15 linux-x86_64", "3.15 win-amd64", "3.14 linux-x86_64"]
+    scan = {"schema": 1, "targets": [target(*label.split()) for label in labels], "packages": [{"rank": 1, "name": "a"}]}
+    path.write_text(json.dumps(scan), encoding="utf-8")
+    seen = []
+    monkeypatch.setattr(scan_install, "check", lambda package, targets, _deadline: seen.extend(t["label"] for t in targets) or {})
+    scan_install.scan(path, 1)
+    assert seen == ["3.14 win-arm64", "3.14 linux-x86_64"]

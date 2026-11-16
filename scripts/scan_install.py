@@ -112,7 +112,10 @@ def scan(path: Path, top: int) -> int:
     data = json.loads(path.read_text(encoding="utf-8"))
     if data.get("schema") != 1:
         raise ValueError("expected coverage schema 1")
-    targets = [t for t in data["targets"] if t["label"] in LAB_TARGETS or t["label"] in MAIN_TARGETS]
+    # The 3.14 lab targets only: a third Python (the lab's 3.15 targets) would be one more wheelgap call per package
+    # inside the same deadline, so fewer of the top 500 would be checked.
+    lab = {label for label in LAB_TARGETS if label.split()[0] in ("3.14", "3.14t")}
+    targets = [t for t in data["targets"] if t["label"] in lab or t["label"] in MAIN_TARGETS]
     if not targets:
         raise ValueError("no install coverage targets in the snapshot")
     packages = sorted(data["packages"], key=lambda package: package["rank"])[:top]
