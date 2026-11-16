@@ -140,7 +140,7 @@ def human_page(by_project: dict[str, list[dict]]) -> str:
       <ul>
         <li>It is built from the sdist PyPI publishes for that release (its sha256 is checked against PyPI's). Build tools come from PyPI too, and a build may download more (Rust crates, for example).</li>
         <li>It is built <strong>twice</strong>, in two separate GitHub Actions runs, and published only when both builds are byte-identical. A build that isn't reproducible, or that something changed in one run only, is never published.</li>
-        <li>It carries exactly one tag, the Python and platform it was built and tested on, and every DLL its extension modules load is either in the wheel or one every Windows machine with that Python has.</li>
+        <li>It carries exactly one tag, the Python and platform it was built and tested on, and every DLL its extension modules import is either beside them in the wheel or one every Windows machine with that Python has.</li>
         <li>It is installed into a fresh environment on a fresh runner of its platform and imported; on free-threaded Python the GIL must stay off. That checks the wheel works; it isn't a security check.</li>
         <li>The index carries each file's sha256, which pip checks. Each file has an attestation that the tracker's gap-wheels workflow published it: <code>gh attestation verify FILE.whl -R wheelgap/tracker</code>.</li>
         <li>Every published wheel, with its sdist's sha256 and links to both build runs, is in <a href="../data/gap-wheels.json">gap-wheels.json</a>.</li>

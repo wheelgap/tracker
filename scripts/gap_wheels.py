@@ -672,7 +672,7 @@ OSI = frozenset(s.lower() for s in (
     "ECL-2.0", "EFL-2.0", "EPL-1.0", "EPL-2.0", "EUPL-1.2", "GPL-2.0-only", "GPL-2.0-or-later", "GPL-3.0-only",
     "GPL-3.0-or-later", "HPND", "ISC", "LGPL-2.0-only", "LGPL-2.0-or-later", "LGPL-2.1-only", "LGPL-2.1-or-later",
     "LGPL-3.0-only", "LGPL-3.0-or-later", "LPL-1.02", "MIT", "MIT-0", "MPL-1.1", "MPL-2.0", "MS-PL", "MS-RL", "MulanPSL-2.0",
-    "NCSA", "OFL-1.1", "OSL-3.0", "PostgreSQL", "PSF-2.0", "Python-2.0", "UPL-1.0", "Unicode-3.0", "Unicode-DFS-2016",
+    "NCSA", "OFL-1.1", "OSL-3.0", "PostgreSQL", "Python-2.0", "UPL-1.0", "Unicode-3.0", "Unicode-DFS-2016",
     "Unlicense", "W3C", "Zlib", "ZPL-2.0", "ZPL-2.1",
     # Deprecated SPDX ids still common on PyPI ("GPL-2.0+" is GPL-2.0-or-later).
     "AGPL-3.0", "GPL-2.0", "GPL-3.0", "LGPL-2.0", "LGPL-2.1", "LGPL-3.0",
@@ -685,23 +685,62 @@ RELEASE = "gap-wheels"
 INDEX_SCHEMA = 1
 
 
+# Standard SPDX exceptions that only add permissions (what may follow WITH).
+SPDX_EXCEPTIONS = frozenset(s.lower() for s in (
+    "Autoconf-exception-2.0", "Autoconf-exception-3.0", "Bison-exception-2.2", "Classpath-exception-2.0",
+    "Font-exception-2.0", "GCC-exception-2.0", "GCC-exception-3.1", "LGPL-3.0-linking-exception",
+    "Linux-syscall-note", "LLVM-exception", "Qt-LGPL-exception-1.1", "Swift-exception",
+    "Universal-FOSS-exception-1.0", "WxWindows-exception-3.1",
+))  # fmt: skip
+
+
 def osi_expression(expr: str) -> bool:
-    """Every licence in an SPDX expression is OSI-approved (a WITH exception is fine; a LicenseRef never is)."""
+    """A well-formed SPDX expression in which every licence is OSI-approved and every WITH names a standard
+    exception that only adds permissions. Grammar: or := and (OR and)*; and := one (AND one)*;
+    one := "(" or ")" | ID["+"] [WITH EXCEPTION]."""
     tokens = re.findall(r"[A-Za-z0-9.+-]+|[()]", expr)
-    if not tokens or "".join(tokens) != re.sub(r"\s+", "", expr):
+    if not tokens or "".join(tokens) != re.sub(r"\s+", "", expr) or len(tokens) > 100:
         return False
-    after_with = False
-    for t in tokens:
-        if t in ("(", ")") or t.upper() in ("AND", "OR"):
-            after_with = False
-            continue
-        if t.upper() == "WITH":
-            after_with = True
-            continue
-        if not after_with and t.lower().removesuffix("+") not in OSI:
+    pos = 0
+
+    def peek() -> str | None:
+        return tokens[pos] if pos < len(tokens) else None
+
+    def one() -> bool:
+        nonlocal pos
+        t = peek()
+        if t is None or t.upper() in ("AND", "OR", "WITH") or t == ")":
             return False
-        after_with = False
-    return True
+        pos += 1
+        if t == "(":
+            if not either() or peek() != ")":
+                return False
+            pos += 1
+            return True
+        if t.lower().removesuffix("+") not in OSI:
+            return False
+        if (w := peek()) is not None and w.upper() == "WITH":
+            pos += 1
+            exc = peek()
+            if exc is None or exc.lower() not in SPDX_EXCEPTIONS:
+                return False
+            pos += 1
+        return True
+
+    def joined(part, op: str) -> bool:
+        nonlocal pos
+        if not part():
+            return False
+        while (t := peek()) is not None and t.upper() == op:
+            pos += 1
+            if not part():
+                return False
+        return True
+
+    def either() -> bool:
+        return joined(lambda: joined(one, "AND"), "OR")
+
+    return either() and pos == len(tokens)
 
 
 def licence(info: object) -> str | None:
@@ -802,22 +841,26 @@ def pe_imports(data: bytes) -> set[str] | None:
 
 
 def missing_dlls(wheel: bytes) -> list[str] | None:
-    """The DLLs the wheel's .pyd/.dll files import that a user's machine may not have and the wheel doesn't carry
-    (empty: self-contained), or None if a file can't be read."""
-    try:
-        with zipfile.ZipFile(io.BytesIO(wheel)) as z:
-            binaries = [i for i in z.infolist() if i.filename.lower().endswith((".pyd", ".dll"))]
-            carried = {i.filename.rsplit("/", 1)[-1].lower() for i in binaries}
-            needed: set[str] = set()
-            for info in binaries[:500]:
-                data = bounded(z, info.filename, 200_000_000)
-                imports = pe_imports(data) if data is not None else None
-                if imports is None:
-                    return None
-                needed |= imports
-    except (zipfile.BadZipFile, KeyError, zlib.error, EOFError, RuntimeError, NotImplementedError, OSError):
-        return None
-    return sorted(n for n in needed if n not in carried and n not in SYSTEM_DLLS and not SYSTEM_DLL.fullmatch(n))
+    """The DLLs the wheel's .pyd/.dll files import that a user's machine may not have and that the wheel doesn't carry
+    beside the importing file (Python looks in that file's own folder, not elsewhere in the wheel); empty when it's
+    self-contained, None if a file can't be read or there are too many to check."""
+    with zipfile.ZipFile(io.BytesIO(wheel)) as z:
+        binaries = [i for i in z.infolist() if i.filename.lower().endswith((".pyd", ".dll"))]
+        if len(binaries) > 500:
+            return None
+        beside: dict[str, set[str]] = {}
+        for i in binaries:
+            folder, _, name = i.filename.lower().rpartition("/")
+            beside.setdefault(folder, set()).add(name)
+        missing: set[str] = set()
+        for info in binaries:
+            data = bounded(z, info.filename, 200_000_000)
+            imports = pe_imports(data) if data is not None else None
+            if imports is None:
+                return None
+            here = beside[info.filename.lower().rpartition("/")[0]]
+            missing |= {n for n in imports if n not in here and n not in SYSTEM_DLLS and not SYSTEM_DLL.fullmatch(n)}
+    return sorted(missing)
 
 
 def unwrap_wheel(archive: bytes, filename: str, digest: str) -> bytes | None:
@@ -865,6 +908,23 @@ def stage_reason(wheel: dict, info: dict | None, optout: set[str]) -> str | None
     return None
 
 
+def take_wheel(repo: str, wheel: dict) -> tuple[bytes | None, str | None]:
+    """(the verified bytes, None) from build 1's run, else build 2's (both reported this sha256), or (None, why not)."""
+    ids = [int(m.group(1)) for u in wheel.get("builds") or [] if isinstance(u, str) and (m := RUN_URL.fullmatch(u))]
+    data = None
+    for run_id in ids:
+        archive = retry(lambda run_id=run_id: fetch_wheel(repo, run_id))
+        if archive is not None and (data := unwrap_wheel(archive, wheel["wheel"], wheel["sha256"])):
+            break
+    if data is None:
+        return None, "no build run kept a wheel with the verified sha256"
+    if (missing := missing_dlls(data)) is None:
+        return None, "couldn't read its extension modules' imports"
+    if missing:
+        return None, f"needs DLLs a user's machine may not have: {', '.join(missing[:5])}"
+    return data, None
+
+
 def cmd_stage(args: argparse.Namespace) -> int:
     """Write STAGED/<wheel> and STAGED/staged.json for the verified wheels that may be published, and (for the
     workflow) `staged`, the same list, and `tests`, the targets to install-test, as GitHub outputs."""
@@ -878,17 +938,10 @@ def cmd_stage(args: argparse.Namespace) -> int:
         reason = stage_reason(wheel, info, optout)
         data = None
         if reason is None:
-            ids = [int(m.group(1)) for u in wheel.get("builds") or [] if isinstance(u, str) and (m := RUN_URL.fullmatch(u))]
-            for run_id in ids:  # build 1's, else build 2's: both reported this sha256
-                archive = retry(lambda run_id=run_id: fetch_wheel(args.repo, run_id))
-                if archive is not None and (data := unwrap_wheel(archive, wheel["wheel"], wheel["sha256"])):
-                    break
-            if data is None:
-                reason = "no build run kept a wheel with the verified sha256"
-            elif (missing := missing_dlls(data)) is None:
-                reason = "couldn't read its extension modules' imports"
-            elif missing:
-                reason = f"needs DLLs a user's machine may not have: {', '.join(missing[:5])}"
+            try:
+                data, reason = take_wheel(args.repo, wheel)
+            except Exception as e:  # noqa: BLE001  (one unreadable wheel costs only itself, not the week's batch)
+                data, reason = None, f"couldn't read it ({type(e).__name__})"
         lines.append(f"| {wheel['name']} | {wheel['version']} | {wheel['target']} | {reason or 'staged'} |")
         if reason is not None:
             continue

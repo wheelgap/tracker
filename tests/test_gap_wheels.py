@@ -525,7 +525,9 @@ class Stage(unittest.TestCase):
         self.assertEqual(gap_wheels.licence({"license_expression": "Apache-2.0 OR MIT"}), "Apache-2.0 OR MIT")
         self.assertIsNone(gap_wheels.licence({"license_expression": "LicenseRef-Proprietary"}))
         self.assertIsNone(gap_wheels.licence({"license_expression": "MIT<script>"}))
-        for not_osi in ("BUSL-1.1", "CC-BY-NC-4.0", "SSPL-1.0", "Elastic-2.0", "MIT AND BUSL-1.1", "CC0-1.0"):
+        for not_osi in ("BUSL-1.1", "CC-BY-NC-4.0", "SSPL-1.0", "Elastic-2.0", "MIT AND BUSL-1.1", "CC0-1.0",
+                        "MIT WITH BUSL-1.1", "Apache-2.0 WITH LicenseRef-NC", "AND", "MIT AND", "(MIT", "MIT)",
+                        "MIT OR OR Apache-2.0", "PSF-2.0"):  # fmt: skip
             with self.subTest(not_osi):
                 self.assertIsNone(gap_wheels.licence({"license_expression": not_osi}))
         for osi in ("(MIT OR Apache-2.0) AND BSD-3-Clause", "GPL-2.0-or-later WITH Classpath-exception-2.0",
@@ -761,10 +763,29 @@ class Dlls(unittest.TestCase):
         self.assertEqual(gap_wheels.missing_dlls(zipped({"pkg/_ext.cp314-win_arm64.pyd": system})), [])
         cpp = pe(["python314.dll", "MSVCP140.dll", "vcomp140.dll"])
         self.assertEqual(gap_wheels.missing_dlls(zipped({"pkg/_ext.pyd": cpp})), ["msvcp140.dll", "vcomp140.dll"])
-        carried = zipped({"pkg/_ext.pyd": cpp, "pkg.libs/msvcp140.dll": system, "pkg.libs/vcomp140.dll": system})
-        self.assertEqual(gap_wheels.missing_dlls(carried), [])
+        beside = zipped({"pkg/_ext.pyd": cpp, "pkg/msvcp140.dll": system, "pkg/vcomp140.dll": system})
+        self.assertEqual(gap_wheels.missing_dlls(beside), [])
+        # Elsewhere in the wheel isn't where Windows looks for the .pyd's DLLs.
+        elsewhere = zipped({"pkg/_ext.pyd": cpp, "junk/msvcp140.dll": system, "pkg/vcomp140.dll": system})
+        self.assertEqual(gap_wheels.missing_dlls(elsewhere), ["msvcp140.dll"])
+        many = zipped({**{f"pkg/m{i}.pyd": system for i in range(500)}, "pkg/last.pyd": cpp})
+        self.assertIsNone(gap_wheels.missing_dlls(many))  # too many to check: refused, not half-checked
         self.assertIsNone(gap_wheels.missing_dlls(zipped({"pkg/_ext.pyd": b"MZ junk"})))
-        self.assertIsNone(gap_wheels.missing_dlls(b"not a zip"))
+
+    def test_an_unreadable_wheel_costs_only_itself(self):
+        # A corrupt LZMA member raises lzma.LZMAError, which nothing expects: that wheel is skipped, the batch goes on.
+        with mock.patch.object(gap_wheels, "fetch_wheel", return_value=b"x"), \
+             mock.patch.object(gap_wheels, "unwrap_wheel", return_value=b"bytes"), \
+             mock.patch.object(gap_wheels, "missing_dlls", side_effect=__import__("lzma").LZMAError("corrupt")):  # fmt: skip
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp = Path(tmp)
+                (tmp / "m.json").write_text(json.dumps({"wheels": [verified()]}))
+                args = gap_wheels.main.__globals__["argparse"].Namespace(
+                    manifest=str(tmp / "m.json"), staged=str(tmp / "staged"), repo="r/r", optout=str(tmp / "none"),
+                    summary=None, github_output=None)  # fmt: skip
+                with mock.patch.object(gap_wheels, "pypi_info", return_value=MIT):
+                    self.assertEqual(gap_wheels.cmd_stage(args), 0)
+                self.assertEqual(json.loads((tmp / "staged" / "staged.json").read_text()), [])
 
 
 if __name__ == "__main__":

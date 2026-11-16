@@ -33,7 +33,7 @@ jobs:
         # site/check/driver.py against the wheelgap release site/check/worker.mjs runs in the browser.
         run: |
           pin=$(sed -n 's/^export const WHEELGAP = "wheelgap==\(.*\)";$/\1/p' site/check/worker.mjs)
-          # The restored uv cache can hold PyPI's page for wheelgap from before a release, for up to 10 minutes.
+          # --refresh-package: never an older page for wheelgap, cached from before a release.
           uvx --python 3.14 --refresh-package wheelgap --with "wheelgap==$pin" pytest@8.4.2 tests/test_check_driver.py
       - name: Site syntax
         run: node --check site/logic.js && node --check site/app.js && node --check site/lab.js && for f in site/check/*.mjs; do node --check "$f"; done
