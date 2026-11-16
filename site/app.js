@@ -203,9 +203,10 @@ function renderTrends() {
     .flatMap((t) => coverageSeries(t.label))
     .map((p) => p.date)
     .sort();
-  $("trend-note").textContent = dates.length > 1
+  const pyodideBundled = (state.data.summary?.[`${state.python} pyodide`]?.bundled ?? 0) > 0;
+  $("trend-note").textContent = dates.length > 1 && !state.showCompiledOnly
     ? `Sparklines: the share of all packages with a wheel for Python ${state.python}, one point per nightly scan from ${dates[0]} to ${dates[dates.length - 1]}. Each is scaled to its own range.` +
-      (state.pyodide[state.python] ? " On Pyodide that's PyPI wheels only: the percentages also count Pyodide's own builds." : "")
+      (pyodideBundled ? " On Pyodide that's PyPI wheels only: the percentages also count Pyodide's own builds." : "")
     : "";
 }
 
@@ -327,7 +328,7 @@ function renderOmniAnswer() {
     cardClass = "verdict-bundled";
     badgeClass = "badge-bundled";
     badgeLabel = "📦 Bundled Pyodide";
-    summary = `has no wheel on PyPI for Pyodide, but Pyodide's own distribution builds it for <strong>Python ${esc(py)}</strong>`;
+    summary = `has no wheel on PyPI for Pyodide, but Pyodide's own distribution builds it for <strong>Python ${esc(py)}</strong>, often an older version than the one shown`;
   } else if (res === "source") {
     cardClass = "verdict-source";
     badgeClass = "badge-source";
@@ -337,7 +338,9 @@ function renderOmniAnswer() {
     cardClass = "verdict-missing";
     badgeClass = "badge-missing";
     badgeLabel = "✕ Cannot Install";
-    summary = `has no wheel for <strong>${esc(pname)}</strong> (Python ${esc(py)}) and no source distribution, so pip can't install it`;
+    summary = pl === "pyodide"
+      ? `has no wheel on PyPI for <strong>${esc(pname)}</strong> (Python ${esc(py)}) and no Pyodide build, so it can't be installed there`
+      : `has no wheel for <strong>${esc(pname)}</strong> (Python ${esc(py)}) and no source distribution, so pip can't install it`;
   } else {
     cardClass = "verdict-unknown";
     badgeClass = "badge-unknown";
@@ -401,9 +404,10 @@ function renderLeaderboard() {
   // Gather stats for all platforms for the active Python version
   const list = [];
   for (const pl of platforms) {
-    const [name, desc] = platformName(pl);
+    const [name] = platformName(pl);
     const idx = targetIndex(state.python, pl);
     if (idx < 0) continue;
+    const desc = platformDetail(state.data.targets[idx]);
 
     let wheel = 0, bundled = 0, source = 0, missing = 0, unknown = 0;
     for (const p of pool) {
@@ -1179,6 +1183,7 @@ async function main() {
     $("btn-show-compiled").setAttribute("aria-pressed", "false");
     state.showCompiledOnly = false;
     renderLeaderboard();
+    renderTrends();
   });
   $("btn-show-compiled")?.addEventListener("click", () => {
     $("btn-show-compiled").classList.add("active");
@@ -1187,6 +1192,7 @@ async function main() {
     $("btn-show-all").setAttribute("aria-pressed", "false");
     state.showCompiledOnly = true;
     renderLeaderboard();
+    renderTrends();
   });
 
   // Table filters
@@ -1384,12 +1390,7 @@ async function main() {
       updateSearchAutocomplete(e.target.value);
     }
   });
-  $("search").addEventListener("change", () => {
-    updateClearBtn();
-    renderOmniAnswer();
-    renderLookup($("search").value);
-    writeHash();
-  });
+
   $("search-autocomplete")?.addEventListener("keydown", (e) => {
     const item = e.target.closest(".autocomplete-item");
     if (!item) return;
@@ -1465,6 +1466,7 @@ async function main() {
     } else if (e.key === "Enter") {
       e.preventDefault();
       closeCommandPalette();
+      $("cmd-trigger")?.focus();
       openDrawer(items[at].dataset.pkg);
     }
   });
@@ -1472,6 +1474,7 @@ async function main() {
     const item = e.target.closest(".cmd-result-item");
     if (!item) return;
     closeCommandPalette();
+    $("cmd-trigger")?.focus();
     openDrawer(item.dataset.pkg);
   });
 
