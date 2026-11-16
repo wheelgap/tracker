@@ -21,7 +21,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
-          # No cache: the build lab and gap-wheel jobs run package code on main and could write entries this restores.
+          # No cache: the build lab runs package code on main and could write entries this restores.
           enable-cache: false
       - name: Tests
         # Pinned like the actions above, so a new pytest release can't change or break the check unannounced.
