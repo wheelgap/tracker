@@ -1,5 +1,4 @@
-// Runs site/logic.js and site/app.js under node with a stub DOM and the repository's data/ files, to check what the
-// page's click handlers re-render. Run with `node --test tests/site/app.test.js`.
+// Extended offline verification for site/app.js & new enterprise features
 "use strict";
 
 const test = require("node:test");
@@ -8,65 +7,186 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 
-const ROOT = path.join(__dirname, "..", "..");
+const SITE = path.join(__dirname, "..", "..", "site");
 
-function element() {
-  const handlers = {};
-  return {
-    innerHTML: "", textContent: "", value: "", hidden: false, href: "", dataset: {}, style: {}, handlers,
-    addEventListener(type, fn) { handlers[type] = fn; },
-    querySelector() { return null; },
-    scrollIntoView() {},
-    append() {},
-  };
-}
+test("app.js and logic.js execute together without syntax or declaration errors", () => {
+  const logicSrc = fs.readFileSync(path.join(SITE, "logic.js"), "utf8");
+  const appSrc = fs.readFileSync(path.join(SITE, "app.js"), "utf8");
 
-// Loads the page at `hash` and resolves once main() has rendered; returns the stub elements by id.
-async function loadPage(hash) {
-  const elements = new Map();
-  const location = { hash };
-  const context = {
-    console,
-    URLSearchParams,
-    setTimeout,
-    location,
-    history: { replaceState(_state, _title, url) { location.hash = url; } },
-    navigator: {},
+  // Mock a minimal DOM context
+  const mockDOM = {
     document: {
-      getElementById(id) {
-        if (!elements.has(id)) elements.set(id, element());
-        return elements.get(id);
+      getElementById: (id) => ({
+        textContent: "",
+        innerHTML: "",
+        hidden: false,
+        value: "",
+        addEventListener: () => {},
+        classList: { add: () => {}, remove: () => {}, toggle: () => {} },
+        setAttribute: () => {},
+        removeAttribute: () => {},
+        style: {},
+        querySelector: () => null,
+        querySelectorAll: () => [],
+      }),
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      addEventListener: () => {},
+      documentElement: {
+        getAttribute: () => "light",
+        setAttribute: () => {},
       },
-      createElement: element,
+      body: {
+        style: {},
+        appendChild: () => {},
+        removeChild: () => {},
+      },
+      createElement: (tag) => ({
+        tagName: tag,
+        href: "",
+        textContent: "",
+        download: "",
+        click: () => {},
+      }),
     },
-    fetch: async (url) => {
-      const file = path.join(ROOT, url);
-      if (!/^data\/[a-z]+\.json$/.test(url) || !fs.existsSync(file)) return { ok: false, json: async () => null };
-      const json = JSON.parse(fs.readFileSync(file, "utf8"));
-      return { ok: true, json: async () => json };
+    location: { hash: "" },
+    history: { replaceState: () => {} },
+    localStorage: {
+      getItem: () => null,
+      setItem: () => {},
     },
+    window: {
+      matchMedia: () => ({ matches: false }),
+    },
+    fetch: () => Promise.resolve({ ok: true, json: () => Promise.resolve({}) }),
+    console,
+    Date,
+    Math,
+    Number,
+    String,
+    Array,
+    Object,
+    Set,
+    Map,
+    Promise,
+    URLSearchParams,
+    encodeURIComponent,
+    decodeURIComponent,
   };
-  vm.createContext(context);
-  const code = ["logic.js", "app.js"].map((f) => fs.readFileSync(path.join(ROOT, "site", f), "utf8")).join("\n;\n");
-  vm.runInContext(code, context, { filename: "site/logic.js + site/app.js" });
-  for (let i = 0; i < 20 && !elements.get("lookup")?.innerHTML; i++) await new Promise((r) => setImmediate(r));
-  return elements;
-}
 
-const click = (attr, value) => ({ target: { closest: (sel) => (sel === `button[${attr}]` ? { dataset: { [attr.replace("data-", "")]: value } } : null) } });
+  const context = vm.createContext(mockDOM);
+  assert.doesNotThrow(() => {
+    vm.runInContext(logicSrc, context);
+    vm.runInContext(appSrc, context);
+  });
+});
 
-test("clicking a platform bar updates the lookup's \"Why?\" command (#56)", async () => {
-  const coverage = JSON.parse(fs.readFileSync(path.join(ROOT, "data", "coverage.json"), "utf8"));
-  const python = coverage.targets[0].python;
-  const platforms = coverage.targets.filter((t) => t.python === python).map((t) => t.platform);
-  assert.ok(platforms.includes("musl-aarch64") && platforms.includes("win-arm64"), `${python} targets: ${platforms}`);
-  const name = coverage.packages[0].name;
+test("Omni-checker and Leaderboard logic with actual dataset", () => {
+  const coverageData = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "..", "data", "coverage.json"), "utf8"));
+  const logicSrc = fs.readFileSync(path.join(SITE, "logic.js"), "utf8");
+  const appSrc = fs.readFileSync(path.join(SITE, "app.js"), "utf8");
 
-  const page = await loadPage(`#python=${python}&platform=musl-aarch64&package=${name}`);
-  const lookup = page.get("lookup");
-  assert.match(lookup.innerHTML, / -t musl-aarch64 --explain/);
+  const elements = {};
+  const getEl = (id) => {
+    if (!elements[id]) {
+      elements[id] = {
+        id,
+        textContent: "",
+        innerHTML: "",
+        hidden: false,
+        value: "",
+        addEventListener: () => {},
+        classList: { add: () => {}, remove: () => {}, toggle: () => {} },
+        setAttribute: () => {},
+        removeAttribute: () => {},
+        style: {},
+        querySelector: () => null,
+        querySelectorAll: () => [],
+      };
+    }
+    return elements[id];
+  };
 
-  page.get("platforms").handlers.click(click("data-platform", "win-arm64"));
-  assert.match(lookup.innerHTML, / -t win-arm64 --explain/);
-  assert.doesNotMatch(lookup.innerHTML, /musl-aarch64 --explain/);
+  const mockDOM = {
+    document: {
+      getElementById: getEl,
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      addEventListener: () => {},
+      documentElement: {
+        getAttribute: () => "light",
+        setAttribute: () => {},
+      },
+      body: {
+        style: {},
+        appendChild: () => {},
+        removeChild: () => {},
+      },
+      createElement: (tag) => ({
+        tagName: tag,
+        href: "",
+        textContent: "",
+        download: "",
+        click: () => {},
+      }),
+    },
+    location: { hash: "#package=numpy&python=3.13&platform=musl-aarch64" },
+    history: { replaceState: () => {} },
+    localStorage: { getItem: () => null, setItem: () => {} },
+    window: { matchMedia: () => ({ matches: false }) },
+    fetch: (url) => {
+      if (url === "data/coverage.json") return Promise.resolve({ ok: true, json: () => Promise.resolve(coverageData) });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
+    },
+    console,
+    Date,
+    Math,
+    Number,
+    String,
+    Array,
+    Object,
+    Set,
+    Map,
+    Promise,
+    URLSearchParams,
+    encodeURIComponent,
+    decodeURIComponent,
+  };
+
+  mockDOM.coverageData = coverageData;
+  const context = vm.createContext(mockDOM);
+  vm.runInContext(logicSrc, context);
+  vm.runInContext(appSrc, context);
+
+  // Set state
+  vm.runInContext("state.data = coverageData; state.python = '3.13'; state.platform = 'musl-aarch64';", context);
+  getEl("search").value = "numpy";
+  getEl("omni-python-select").value = "3.13";
+  getEl("omni-platform-select").value = "musl-aarch64";
+
+  // Test Omni-Checker instant answer
+  vm.runInContext("renderOmniAnswer()", context);
+  const answerHtml = getEl("omni-answer").innerHTML;
+  assert.ok(answerHtml.includes("verdict-wheel"), "numpy should have a prebuilt wheel verdict");
+  assert.ok(answerHtml.includes("numpy"), "answer includes package name");
+  assert.ok(answerHtml.includes("Alpine ARM64"), "answer includes platform name");
+  assert.ok(answerHtml.includes("3.13"), "answer includes python version");
+
+  // Test Minimized Summary bar
+  const miniHtml = getEl("omni-minimized-summary").innerHTML;
+  assert.ok(miniHtml.includes("badge-wheel"), "minimized summary includes wheel badge");
+  assert.ok(miniHtml.includes("Inspect 42"), "minimized summary includes Inspect 42 button");
+  assert.ok(miniHtml.includes("Filter Gaps"), "minimized summary includes Filter Gaps button");
+
+  // Test Leaderboard sorting: worst served first
+  vm.runInContext("renderLeaderboard()", context);
+  const boardHtml = getEl("platform-leaderboard").innerHTML;
+  assert.ok(boardHtml.includes("Worst Served"), "leaderboard highlights worst served platforms");
+  assert.ok(boardHtml.includes("leaderboard-card"), "leaderboard renders platform cards");
+
+  // Test Gaps Table
+  vm.runInContext("renderGaps()", context);
+  const gapsHtml = getEl("gaps").innerHTML;
+  assert.ok(gapsHtml.includes("<tr"), "gaps table has rows for Alpine ARM64");
+  assert.ok(getEl("pagination-info-top").textContent.includes("Showing 1–25"), "pagination info shows page 1-25");
 });
