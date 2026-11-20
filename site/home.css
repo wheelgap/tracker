@@ -712,7 +712,7 @@ button, input, select {
   display: flex;
   align-items: center;
   gap: 10px;
-  flex-shrink: 0;
+  min-width: 0;
 }
 .omni-badge {
   font: 700 0.72rem var(--mono);
@@ -1229,6 +1229,10 @@ button, input, select {
   align-items: start;
 }
 
+.content-split-grid > * {
+  min-width: 0;
+}
+
 @media (max-width: 960px) {
   .content-split-grid {
     grid-template-columns: 1fr;
@@ -1323,6 +1327,7 @@ button, input, select {
 .pagination-controls {
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 4px;
 }
 
@@ -2238,6 +2243,7 @@ a.blocker-ex:hover {
     display: none;
   }
   .cmd-trigger {
+    flex: 0 0 36px;
     width: 36px;
     height: 36px;
     padding: 0;
@@ -2251,6 +2257,9 @@ a.blocker-ex:hover {
     padding: 0;
     width: 36px;
     justify-content: center;
+  }
+  .omni-title-wrap {
+    flex-wrap: wrap;
   }
 }
 
