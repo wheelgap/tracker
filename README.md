@@ -142,7 +142,11 @@ python3 scripts/build_csv.py data/coverage.json _site/data/coverage.csv \
   --history data/history.json _site/data/history.csv
 python3 scripts/build_most_wanted.py data/coverage.json _site/data/most-wanted.json
 python3 scripts/build_badges.py data/coverage.json _site/badge
-python3 scripts/build_pages.py data/coverage.json _site notes
+curl -sfL --max-time 60 -o _site/data/gap-wheels.json https://wheelgap.github.io/wheels/data/gap-wheels.json \
+  || echo "::warning::couldn't download gap-wheels.json from wheelgap.github.io/wheels"
+curl -sfL --max-time 60 -o _site/data/status.json https://wheelgap.github.io/wheels/data/status.json \
+  || echo "::warning::couldn't download status.json from wheelgap.github.io/wheels"
+python3 scripts/build_pages.py data/coverage.json _site notes _site/data/gap-wheels.json _site/data/status.json
 python3 scripts/build_campaigns.py data/coverage.json data/history.json data/changes.json campaigns.toml _site
 python3 scripts/build_blockers.py data/coverage.json _site/data/blockers.json
 python3 scripts/build_platform_pages.py data/coverage.json _site/data/most-wanted.json _site campaigns.toml --history data/history.json --blockers _site/data/blockers.json
@@ -153,7 +157,7 @@ python3 -m http.server -d _site --bind 127.0.0.1
 
 Then open <http://localhost:8000/> for the home page, or a package page such as <http://localhost:8000/p/numpy/>. `_site/` is in `.gitignore`. Rerun the commands after a change to `site/` or `scripts/`.
 
-The publish step also downloads `gap-wheels.json` from [wheelgap/wheels](https://github.com/wheelgap/wheels); the commands above skip it. Without it the package pages have no gap wheel hints, and the legacy gap wheel index (`build_gap_index.py`) isn't built. Two more things only work on the published site:
+Package-page gap wheel hints use `gap-wheels.json` and the current `status.json` from [wheelgap/wheels](https://github.com/wheelgap/wheels), downloaded above as in the publish step. Only `in-index` and `yanked` wheels are offered; a yanked release is labelled and its command pins the exact version. A missing or malformed status file warns and falls back to `gap-wheels.json` alone; without that file there are no hints. To preview offline, leave out the downloads and the two optional JSON arguments. The publish step also builds the legacy gap wheel index (`build_gap_index.py`), which these commands skip. Two more things only work on the published site:
 
 - `site/404.html` uses absolute `/tracker/` paths, so its styles load only under that prefix;
 - the lookup fetches the gap wheel list from `../wheels/data/gap-wheels.json`, which a local server doesn't have, so it shows no gap wheels.

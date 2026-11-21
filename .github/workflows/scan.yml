@@ -256,7 +256,9 @@ jobs:
           # The same verified wheel index is used for package-page hints and the legacy index.
           curl -sfL --max-time 60 -o "$RUNNER_TEMP/gap-wheels.json" https://wheelgap.github.io/wheels/data/gap-wheels.json \
             || echo "::warning::couldn't download gap-wheels.json from wheelgap.github.io/wheels"
-          python3 scripts/build_pages.py data/coverage.json _site notes "$RUNNER_TEMP/gap-wheels.json"
+          curl -sfL --max-time 60 -o "$RUNNER_TEMP/status.json" https://wheelgap.github.io/wheels/data/status.json \
+            || echo "::warning::couldn't download status.json from wheelgap.github.io/wheels"
+          python3 scripts/build_pages.py data/coverage.json _site notes "$RUNNER_TEMP/gap-wheels.json" "$RUNNER_TEMP/status.json"
           python3 scripts/build_campaigns.py data/coverage.json data/history.json data/changes.json campaigns.toml _site
           # Extra home-page card and platform-page section: if it fails, the card says the list isn't available and
           # the platform pages leave the section out (they warn about the missing file) rather than stopping the deploy.
