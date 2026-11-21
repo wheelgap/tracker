@@ -258,6 +258,23 @@ async function loadPage(hash, packageData = null, gapWheelIndex = null, setup = 
 }
 
 const coverage = () => JSON.parse(fs.readFileSync(path.join(ROOT, "data", "coverage.json"), "utf8"));
+
+test("scan metadata explains names left out of the ranking, with singular and plural counts", async () => {
+  const { get, context } = await loadPage("");
+  vm.runInContext("delete state.data.dropped_names; const rankedPackages = state.data.packages; renderMeta()", context);
+  const original = get("meta").textContent;
+  assert.doesNotMatch(original, /left out/);
+  for (const count of [1, 2]) {
+    vm.runInContext(`state.data.packages = rankedPackages.slice(0, -${count});
+      state.data.dropped_names = { count: ${count}, names: [] }; renderMeta()`, context);
+    assert.equal(get("meta").textContent,
+      `${original} · ${count} ${count === 1 ? "name" : "names"} PyPI doesn't have left out of the top ${
+        coverage().packages.length.toLocaleString("en-GB")}`);
+  }
+  vm.runInContext("delete state.data.dropped_names; renderMeta()", context);
+  assert.equal(get("meta").textContent, original);
+});
+
 const cardClick = (platform) => ({ target: { closest: (sel) => (sel === ".leaderboard-card" ? { dataset: { pl: platform } } : null) } });
 
 async function loadDialogPage() {

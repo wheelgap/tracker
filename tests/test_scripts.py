@@ -115,6 +115,26 @@ class CheckScanTests(unittest.TestCase):
         found = check_scan.problems(scan(), [], top=100)
         self.assertEqual(found, ["only 3 packages, expected about 100"])
 
+    def test_dropped_names_count_towards_the_minimum(self):
+        data = scan(packages=[package(i, f"p{i}") for i in range(1, 19)])
+        data["dropped_names"] = {"count": 1, "names": ["gone"]}
+        self.assertEqual(check_scan.problems(data, [], top=20), [])
+        self.assertTrue(check_scan.problems(data, [], top=21))
+
+    def test_malformed_dropped_names_are_refused(self):
+        for dropped in (
+            None, [], {"count": 1}, {"count": 2, "names": ["gone"]},
+            {"count": -1, "names": []}, {"count": True, "names": ["gone"]},
+            {"count": 1, "names": [None]}, {"count": 1, "names": [""]},
+            {"count": 2, "names": ["gone", "gone"]},
+            {"count": 26, "names": [f"gone{i}" for i in range(26)]},
+            {"count": 1, "names": ["pkg1"]},
+        ):
+            with self.subTest(dropped=dropped):
+                data = scan()
+                data["dropped_names"] = dropped
+                self.assertTrue(any("dropped_names" in p for p in check_scan.problems(data, [], top=3)))
+
     def test_missing_summary_label(self):
         data = scan()
         del data["summary"][LABELS[1]]

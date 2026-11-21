@@ -21,6 +21,10 @@ The site's design, Precision UI, is by [Kunal Shah (@kunalkshah1)](https://githu
 - `targets`: the list of `{label, python, platform}`. Each package's `results` lines up with it.
 - `summary`: per target label, counts of `wheel`, `source` (sdist only, so it builds on install), `missing` (can't install), `unknown` (the lookup failed) and `bundled`.
 - `packages`: `rank`, `name`, `version` (the latest release), `downloads` (30 days), `pure` (has a wheel that works everywhere), `error` and `results`.
+- `dropped_names` (only when names were left out): `{count, names}` records names in the download ranking that PyPI
+  answered with `not on index` (404). `scripts/drop_missing_names.py` removes them before the scan is checked,
+  adjusting `summary` and `lookup_errors` but keeping the remaining packages' original ranks. Other lookup errors
+  stay in the scan; more than 25 missing names stops the scan instead of publishing it.
 - `pyodide_locks`: the Pyodide releases the scan used, as `{python, pyodide_version, source}`, where `source` is the committed lock file it read, e.g. `pyodide/0.29.5-pyodide-lock.json` (see [Pyodide releases](#pyodide-releases); `pyodide_version` is `"?"` because Pyodide's lock files don't say, so go by the file name).
 
 `bundled` only appears on a `pyodide` target: there's no wheel on PyPI for Pyodide, but the pinned Pyodide release for that Python ships its own build of the package, so it installs there. That build is **often an older version** than the `version` scanned (the latest release on PyPI): Pyodide 0.29.5 ships pandas 2.3.3, for example. Treat `bundled` like `wheel` if you're asking "does it install in Pyodide?", and like a gap if you're asking "is there a wheel for the latest release?". The per-package files below say which version Pyodide ships. A package with a Pyodide wheel on PyPI is `wheel` whether or not Pyodide also bundles it. A scan without `pyodide_locks` (or with none for that Python) didn't look at Pyodide's own builds, so it counts those packages as `missing` or `source`.

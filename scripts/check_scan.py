@@ -24,8 +24,10 @@ from pathlib import Path
 
 if __package__:  # imported as scripts.check_scan (the tests)
     from . import pyodide_locks
+    from .drop_missing_names import MAX_DROPPED_NAMES
 else:  # run as python scripts/check_scan.py
     import pyodide_locks
+    from drop_missing_names import MAX_DROPPED_NAMES
 
 MIN_PACKAGE_SHARE = 0.95
 MAX_ERROR_SHARE = 0.05
@@ -110,11 +112,34 @@ def generated_problems(scan: dict, history: list[dict]) -> list[str]:
     return []
 
 
+def dropped_names_problems(scan: dict) -> list[str]:
+    if "dropped_names" not in scan:
+        return []
+    dropped = scan["dropped_names"]
+    if not isinstance(dropped, dict):
+        return ["dropped_names must have count and names"]
+    count, names = dropped.get("count"), dropped.get("names")
+    if (
+        type(count) is not int or not 0 <= count <= MAX_DROPPED_NAMES
+        or not isinstance(names, list) or count != len(names)
+        or any(not isinstance(name, str) or not name for name in names)
+    ):
+        return [f"dropped_names must list at most {MAX_DROPPED_NAMES} names, with a matching count"]
+    keys = [pyodide_locks.canonical(name) for name in names]
+    remaining = {pyodide_locks.canonical(p["name"]) for p in scan.get("packages", [])
+                 if isinstance(p.get("name"), str)}
+    if len(set(keys)) != count or remaining.intersection(keys):
+        return ["dropped_names must be unique and absent from packages"]
+    return []
+
+
 def problems(scan: dict, history: list[dict], top: int, root: Path = pyodide_locks.ROOT) -> list[str]:
-    out = []
+    out = dropped_names_problems(scan)
+    dropped = 0 if out else scan.get("dropped_names", {}).get("count", 0)
     n = len(scan.get("packages", []))
-    if n < MIN_PACKAGE_SHARE * top:
-        out.append(f"only {n} packages, expected about {top}")
+    if n + dropped < MIN_PACKAGE_SHARE * top:
+        left_out = f" and {dropped} dropped names" if dropped else ""
+        out.append(f"only {n} packages{left_out}, expected about {top}")
     labels = [t["label"] for t in scan.get("targets", [])]
     pyodide = [t.get("platform") == "pyodide" for t in scan.get("targets", [])]
     missing = [label for label in labels if label not in scan.get("summary", {})]

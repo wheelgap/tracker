@@ -79,6 +79,8 @@ jobs:
             echo "attempt $attempt failed, retrying in 60s"; sleep 60
           done
           exit 1
+      - name: Leave out names PyPI no longer has
+        run: python3 scripts/drop_missing_names.py data/coverage.json
       - name: Check the scan looks right
         env:
           ALLOW_DROP: ${{ inputs.allow_drop && '1' || '' }}

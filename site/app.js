@@ -137,6 +137,11 @@ function renderMeta() {
   $("meta").textContent =
     `Latest scan ${date.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })} · ` +
     `wheelgap ${d.wheelgap} · download ranking from ${d.top_packages.last_update?.slice(0, 10) ?? "top-pypi-packages"}`;
+  const dropped = d.dropped_names?.count ?? 0;
+  if (dropped > 0) {
+    $("meta").textContent += ` · ${fmt(dropped)} ${dropped === 1 ? "name" : "names"} PyPI doesn't have ` +
+      `left out of the top ${fmt(d.packages.length + dropped)}`;
+  }
   const pure = d.packages.filter((p) => p.pure).length;
   $("pure-note").textContent =
     `${fmt(pure)} of the ${fmt(d.packages.length)} ship a pure Python wheel; ` +
