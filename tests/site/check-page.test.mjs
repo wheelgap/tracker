@@ -374,6 +374,253 @@ test("the badge is a small static image on the page's own origin, offered as Mar
   assert.doesNotMatch(page, /innerHTML/);
 });
 
+test("a clean verdict offers the README badge in the verdict card and hides it for gaps or unknowns", () => {
+  const html = read("index.html");
+  const card = html.match(/<section aria-labelledby="verdict" class="verdict-card">(.*?)<\/section>/s);
+  assert.ok(card, "verdict-card is in index.html");
+  assert.match(card[1], /<div id="verdict-badge" class="verdict-badge" hidden>/);
+  assert.match(card[1], /Keep it that way: add the check to your README/);
+  assert.match(card[1], /<img class="badge-img" src="badge\.svg" alt="wheelgap: check wheels" width="146" height="20">/);
+  assert.match(card[1], /<button type="button" class="action" id="copy-verdict-badge">Copy badge Markdown<\/button>/);
+
+  const actions = html.match(/<div class="actions">(.*?)<\/div>/s);
+  assert.ok(actions, "actions block is in index.html");
+  assert.match(actions[1], /id="copy-link"[^<]*<\/button>\s*<button type="button" class="action" id="copy-share">Copy result as text<\/button>/);
+
+  const source = read("check.mjs");
+  const rv = source.match(/^function renderVerdict\(\) \{.*?^}$/ms);
+  const rn = source.match(/^function renderNext\(\) \{.*?^}$/ms);
+  assert.ok(rv && rn, "renderVerdict and renderNext are in check.mjs");
+
+  const run = (rows, packages = 5, targets = [{ label: "3.14 linux-x86_64", python: "3.14", platform: "linux-x86_64" }], extra = {}) => {
+    const made = new Map();
+    const element = (key) => {
+      if (!made.has(key)) {
+        const classes = new Set();
+        made.set(key, {
+          hidden: null,
+          textContent: "",
+          classList: { toggle: (c, on) => (on ? classes.add(c) : classes.delete(c)), has: (c) => classes.has(c) },
+          closest: () => element(`${key} section`),
+          replaceChildren() {},
+        });
+      }
+      return made.get(key);
+    };
+    const state = {
+      repo: { owner: "o", name: "r" },
+      ref: "main",
+      plan: { lockfiles: [{ path: "uv.lock" }] },
+      pythons: ["3.14"],
+      platforms: ["linux-x86_64"],
+      result: { lockfile: "uv.lock", packages, targets, outside_lock: [], rows, skipped: [], private: [], looked_up: false, ...extra },
+    };
+    const fns = new Function(
+      "$", "state", "el", "headline", "verdictText", "nextSteps", "sortPythons", "missedText", "cliCommand", "badgeMarkdown",
+      "pickLockfile", "autoPick", "privatePyprojectReason", "privateText", `${rv[0]}\n${rn[0]}\nreturn { renderVerdict, renderNext };`,
+    )(
+      element, state, () => ({}), checkLogic.headline, checkLogic.verdictText, checkLogic.nextSteps, checkLogic.sortPythons,
+      checkLogic.missedText, checkLogic.cliCommand, checkLogic.badgeMarkdown, checkLogic.pickLockfile, checkLogic.autoPick,
+      checkLogic.privatePyprojectReason, checkLogic.privateText,
+    );
+    fns.renderVerdict();
+    fns.renderNext();
+    return element;
+  };
+
+  // Clean result: verdict badge shown, bottom section renamed and fix-prompt hidden.
+  const clean = run([]);
+  assert.equal(clean("verdict-badge").hidden, false);
+  assert.equal(clean("verdict section").classList.has("clean"), true);
+  assert.equal(clean("next-title").textContent, "Keep it green");
+  assert.equal(clean("copy-prompt").hidden, true);
+  assert.equal(clean("prompt-note").hidden, true);
+
+  // Result with gaps: verdict badge hidden, Fix it heading and fix-prompt shown.
+  const withGaps = run([{ name: "a", gaps: ["3.14 linux-x86_64"], unknown: [] }]);
+  assert.equal(withGaps("verdict-badge").hidden, true);
+  assert.equal(withGaps("verdict section").classList.has("clean"), false);
+  assert.equal(withGaps("next-title").textContent, "Fix it");
+  assert.equal(withGaps("copy-prompt").hidden, false);
+  assert.equal(withGaps("prompt-note").hidden, false);
+
+  // Result with unknowns: verdict badge hidden, not clean.
+  const withUnknowns = run([{ name: "u", gaps: [], unknown: ["3.14 linux-x86_64"] }]);
+  assert.equal(withUnknowns("verdict-badge").hidden, true);
+  assert.equal(withUnknowns("verdict section").classList.has("clean"), false);
+  assert.equal(withUnknowns("next-title").textContent, "Fix it");
+
+  // Nothing checked: verdict badge hidden.
+  const empty = run([], 0);
+  assert.equal(empty("verdict-badge").hidden, true);
+
+  // Clean, but a private index's packages weren't checked: no badge offer and no "Keep it green".
+  const withPrivate = run([], 5, undefined, { private: ["corp"], skipped: ["corp"] });
+  assert.equal(withPrivate("verdict-badge").hidden, true);
+  assert.equal(withPrivate("next-title").textContent, "Fix it");
+
+  // Both new copy buttons use copy() like the existing ones.
+  assert.match(source, /\$\("copy-verdict-badge"\)\.onclick = \(e\) => copy\(e\.currentTarget, \$\("badge-md"\)\.textContent, "Badge Markdown copied"\);/);
+  assert.match(source, /\$\("copy-share"\)\.onclick = \(e\) => copy\(e\.currentTarget, shareText\(/);
+  // The share line names only the shown result's counted targets: never a Python the lockfile leaves out, and never
+  // a selection whose check hasn't come back yet.
+  const countedSrc = source.match(/^const counted = (.*);$/m);
+  assert.ok(countedSrc, "counted() is in check.mjs");
+  const counted = new Function("state", `return ${countedSrc[1]};`)({
+    result: {
+      outside_lock: ["3.15"],
+      targets: [
+        { python: "3.14", platform: "linux-x86_64" }, { python: "3.14", platform: "win-amd64" },
+        { python: "3.15", platform: "linux-x86_64" }, { python: "3.15", platform: "win-amd64" },
+      ],
+    },
+  });
+  assert.deepEqual(counted("python"), ["3.14"]);
+  assert.deepEqual(counted("platform"), ["linux-x86_64", "win-amd64"]);
+  assert.match(source, /shareText\([^\n]*counted\("python"\), counted\("platform"\)/);
+  assert.match(source, /shareText\([^\n]*location\.href, \(state\.result\.private \|\| \[\]\)\.length\)/);
+  assert.doesNotMatch(source, /shareText\([^\n]*state\.pythons/);
+});
+
+test("renderTable shows the links in the Fix cell and the package-name link for a package the tracker has, and neither for one it doesn't", () => {
+  const source = read("check.mjs");
+  const fn = (name) => {
+    const found = source.match(new RegExp(`^(?:async )?function ${name}\\(.*?^}$`, "ms"));
+    assert.ok(found, `${name} is in check.mjs`);
+    return found[0];
+  };
+  const elements = new Map();
+  const $ = (id) => {
+    if (!elements.has(id)) {
+      elements.set(id, {
+        textContent: "",
+        hidden: false,
+        children: [],
+        classList: { toggle() {}, remove() {}, add() {} },
+        closest: () => ({ classList: { toggle() {}, remove() {} } }),
+        replaceChildren: (...kids) => { elements.get(id).children = kids; },
+      });
+    }
+    return elements.get(id);
+  };
+  const el = (tag, attrs = {}, ...kids) => {
+    const text = attrs.text || "";
+    const flatKids = kids.flat().filter(Boolean);
+    const kidTexts = flatKids.map((k) => (typeof k === "string" ? k : k?.text || k?.textContent || "")).join("");
+    return {
+      tag,
+      attrs,
+      text: text + kidTexts,
+      textContent: text + kidTexts,
+      children: flatKids,
+    };
+  };
+
+  const state = {
+    python: "3.14",
+    platform: "linux-x86_64",
+    fixesDone: true,
+    showAll: false,
+    fixes: {
+      "has-tracker==1.0": { found: {}, loses: [] },
+      "no-tracker==2.0": { found: {}, loses: [] },
+    },
+    gapWheels: null,
+    lab: {
+      "has-tracker": { ok: true, builds: [], issues_url: "https://github.com/org/has-tracker/issues" },
+      "no-tracker": { ok: false, builds: [], issues_url: null },
+    },
+    result: {
+      lockfile: "uv.lock",
+      outside_lock: [],
+      targets: [{ python: "3.14", platform: "linux-x86_64", label: "3.14 linux-x86_64" }],
+      rows: [
+        {
+          name: "has-tracker",
+          version: "1.0",
+          gaps: ["3.14 linux-x86_64"],
+          statuses: { "3.14 linux-x86_64": "source" },
+          lookup: true,
+          here: ["3.14 linux-x86_64"],
+        },
+        {
+          name: "no-tracker",
+          version: "2.0",
+          gaps: ["3.14 linux-x86_64"],
+          statuses: { "3.14 linux-x86_64": "source" },
+          lookup: true,
+          here: ["3.14 linux-x86_64"],
+        },
+      ],
+    },
+  };
+
+  const NAMES = { "linux-x86_64": "Linux x86_64" };
+  const STATUS_TEXT = { source: "source" };
+  const LAB_SHORT = {};
+  const FIX_TEXT = { none: () => "no newer release has a wheel" };
+  const SHOWN = 60;
+
+  const runTable = new Function(
+    "$", "state", "el", "rowsFor", "fixFor", "gapWheelFixText", "canonicalName", "fixLinks", "labFor", "labVerdict", "gapWheelFor", "NAMES", "STATUS_TEXT", "LAB_SHORT", "FIX_TEXT", "SHOWN",
+    `
+    ${fn("renderTable")}
+    return renderTable;
+    `
+  )(
+    $, state, el,
+    checkLogic.rowsFor, checkLogic.fixFor, checkLogic.gapWheelFixText, checkLogic.canonicalName,
+    checkLogic.fixLinks, checkLogic.labFor, checkLogic.labVerdict, checkLogic.gapWheelFor,
+    NAMES, STATUS_TEXT, LAB_SHORT, FIX_TEXT, SHOWN
+  );
+
+  runTable();
+
+  const table = $("gap-table");
+  assert.equal(table.hidden, false);
+  const tbody = table.children[1];
+  assert.ok(tbody, "tbody was rendered");
+  const trs = tbody.children;
+  assert.equal(trs.length, 2);
+
+  // Row 1: has-tracker (tracker has the package)
+  const trHas = trs[0];
+  const pkgHas = trHas.children[0]; // td.pkg
+  const fixHas = trHas.children[2]; // td.fix
+
+  // Package name links to tracker page, and PyPI link is beside it
+  const pkgHasLinks = pkgHas.children.filter((c) => c.tag === "a");
+  assert.equal(pkgHasLinks.length, 2);
+  assert.equal(pkgHasLinks[0].attrs.href, "../p/has-tracker/");
+  assert.equal(pkgHasLinks[0].text, "has-tracker");
+  assert.equal(pkgHasLinks[1].attrs.href, "https://pypi.org/project/has-tracker/1.0");
+  assert.equal(pkgHasLinks[1].text, "PyPI");
+
+  // Fix cell has "coverage and build results" and "ask the maintainers"
+  const fixHasLinks = fixHas.children.flatMap((c) => c.children || []).filter((c) => c.tag === "a");
+  assert.equal(fixHasLinks.length, 2);
+  assert.equal(fixHasLinks[0].attrs.href, "../p/has-tracker/");
+  assert.equal(fixHasLinks[0].text, "coverage and build results");
+  assert.equal(fixHasLinks[1].attrs.href, "https://github.com/org/has-tracker/issues");
+  assert.equal(fixHasLinks[1].text, "ask the maintainers");
+  assert.equal(fixHasLinks[1].attrs.rel, "noopener nofollow");
+
+  // Row 2: no-tracker (tracker does NOT have the package)
+  const trNo = trs[1];
+  const pkgNo = trNo.children[0]; // td.pkg
+  const fixNo = trNo.children[2]; // td.fix
+
+  // Package name links directly to PyPI, no separate tracker link, no PyPI link beside it
+  const pkgNoLinks = pkgNo.children.filter((c) => c.tag === "a");
+  assert.equal(pkgNoLinks.length, 1);
+  assert.equal(pkgNoLinks[0].attrs.href, "https://pypi.org/project/no-tracker/2.0");
+  assert.equal(pkgNoLinks[0].text, "no-tracker");
+
+  // Fix cell has neither link
+  const fixNoLinks = fixNo.children.flatMap((c) => c.children || []).filter((c) => c.tag === "a");
+  assert.equal(fixNoLinks.length, 0);
+});
+
 test("noLockfile offers the PyPI package command when setup.cfg names one, and keeps the plain verdict otherwise", () => {
   const source = read("check.mjs");
   const fb = source.match(/^function showPackageFallback\(.*?^}$/ms);

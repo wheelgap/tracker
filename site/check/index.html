@@ -48,6 +48,13 @@
     <section aria-labelledby="verdict" class="verdict-card">
       <h2 id="verdict"></h2>
       <p class="note" id="verdict-detail"></p>
+      <div id="verdict-badge" class="verdict-badge" hidden>
+        <p class="note">Keep it that way: add the check to your README</p>
+        <div class="verdict-badge-row">
+          <img class="badge-img" src="badge.svg" alt="wheelgap: check wheels" width="146" height="20">
+          <button type="button" class="action" id="copy-verdict-badge">Copy badge Markdown</button>
+        </div>
+      </div>
       <div id="alerts"></div>
       <p class="next" id="next" hidden><span>Ready for what's next?</span> <span id="next-buttons"></span></p>
     </section>
@@ -93,8 +100,9 @@
       <div class="actions">
         <button type="button" class="action" id="copy-prompt">Copy a fix prompt for your coding agent</button>
         <button type="button" class="action" id="copy-link">Copy link to this result</button>
+        <button type="button" class="action" id="copy-share">Copy result as text</button>
       </div>
-      <p class="note">The prompt lists each bump and how to confirm it. Paste it into Claude Code, Cursor or any agent; with <code>claude mcp add wheelgap -- uvx --from wheelgap wheelgap-mcp</code>, it can check packages itself.</p>
+      <p class="note" id="prompt-note">The prompt lists each bump and how to confirm it. Paste it into Claude Code, Cursor or any agent; with <code>claude mcp add wheelgap -- uvx --from wheelgap wheelgap-mcp</code>, it can check packages itself.</p>
       <section id="gap-wheels" aria-labelledby="gap-wheels-title" hidden>
         <h3 id="gap-wheels-title">Gap wheels</h3>
         <p class="note" id="gap-wheels-note"></p>

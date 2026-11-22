@@ -469,8 +469,39 @@ export function gapWheelFixText(row, gapWheels) {
   return filled === row.gaps.length ? "gap wheel available" : `gap wheel for ${filled} of ${row.gaps.length} gaps`;
 }
 
+// The check scripts/build_pages.py's valid_issues_url() makes before the package page links an issues_url (it's
+// data from the package's PyPI metadata): an https:// URL with a host, printable ASCII only, no spaces or control
+// characters, and no user@ part. Read from the text itself, as urlsplit reads it, so "https:///issues" has no host
+// (WHATWG's URL would read one) and "https://a@b.example" is refused even with an empty user.
+export function validIssuesUrl(url) {
+  if (typeof url !== "string" || !/^[\x21-\x7E]+$/.test(url)) return false;
+  const authority = url.match(/^https:\/\/([^/?#]*)/i)?.[1];
+  if (!authority || authority.includes("@")) return false;
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" && Boolean(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
+// The links under a row's Fix text when no release fixes it (`none` or `loses`) and no gap wheel fills it: the
+// package's tracker page when the tracker has it, and its maintainers' issue tracker when that's known and valid.
+// `trackerPkg` is what loadLab() kept for the package ({ok, builds, issues_url}). A row not looked up gets none.
+export function fixLinks(row, f, trackerPkg = null, gapWheels = null) {
+  if (!row || !f || row.lookup === false) return [];
+  if (f.kind !== "none" && f.kind !== "loses") return [];
+  if (gapWheels && gapWheelFixText(row, gapWheels)) return [];
+  const links = [];
+  const name = canonicalName(row.name || "");
+  if (trackerPkg?.ok === true && name) links.push({ text: "coverage and build results", href: `../p/${name}/` });
+  const issuesUrl = trackerPkg?.issues_url;
+  if (validIssuesUrl(issuesUrl)) links.push({ text: "ask the maintainers", href: issuesUrl, rel: "noopener nofollow" });
+  return links;
+}
+
 // A prompt to paste into Claude Code (or any coding agent): the gaps, the bumps that fix them, and how to confirm.
-export function fixPrompt(repoName, result, fixes, pythons, platforms, gapWheels = null) {
+export function fixPrompt(repoName, result, fixes, pythons, platforms, gapWheels = null, tracker = {}) {
   const groups = { all: [], some: [], loses: [], none: [], private: [], pending: [] };
   for (const r of result.rows) {
     const f = fixFor(r, fixes);
@@ -478,7 +509,11 @@ export function fixPrompt(repoName, result, fixes, pythons, platforms, gapWheels
     const gaps = r.gaps.join(", ");
     if (f.kind === "all") groups.all.push(`- ${r.name} ${r.version} -> ${f.text}`);
     else if (f.kind === "some") groups.some.push(`- ${r.name} ${r.version} -> ${f.text} (gaps on ${gaps})`);
-    else groups[f.kind].push(`- ${r.name} ${r.version}: ${gaps}`);
+    else if (f.kind === "none" || f.kind === "loses") {
+      const issuesUrl = tracker?.[canonicalName(r.name)]?.issues_url;
+      const ask = validIssuesUrl(issuesUrl) ? ` (ask the maintainers: ${issuesUrl})` : "";
+      groups[f.kind].push(`- ${r.name} ${r.version}: ${gaps}${ask}`);
+    } else groups[f.kind].push(`- ${r.name} ${r.version}: ${gaps}`);
   }
   const lines = [
     `In ${repoName}, wheelgap found dependencies in ${result.lockfile} with no prebuilt wheel for some of the platforms we target (Python ${sortPythons(pythons).join(", ")} on ${platforms.join(", ")}), so they'd be compiled from source or fail to install.`,
@@ -514,6 +549,32 @@ export function verdictText(h) {
   if (h.gaps === 0) return `✓ All ${h.packages} packages have a wheel for ${where}`;
   const some = h.targets === 1 ? "this target" : `at least one of the ${h.targets} targets`;
   return `${h.gaps} of ${h.packages} packages ${h.gaps === 1 ? "has" : "have"} no wheel for ${some}`;
+}
+
+// One-line plain-text summary of a result, ending with the share link. Built as text, never as HTML. The line is
+// pasted where the page's alerts don't follow it, so `notChecked` (the packages left off pypi.org as a private
+// index's, which the counts leave out) is said in the line itself, and a result with any is never a ✓.
+export function shareText(repoName, h, pythons, platforms, url, notChecked = 0) {
+  const tail = `${notChecked ? `; ${notChecked} more ${notChecked === 1 ? "wasn't" : "weren't"} checked (their index isn't known to be PyPI)` : ""} (checked with wheelgap) ${url}`;
+  if (h.packages === 0) {
+    return `${repoName}: no dependencies were checked (checked with wheelgap) ${url}`;
+  }
+  if (h.targets === 0) {
+    return `${repoName}: lockfile leaves out every Python picked${tail}`;
+  }
+  if (h.gaps === 0 && h.unknown) {
+    const where = h.targets === 1 ? "1 target" : "some targets";
+    return `${repoName}: no dependency is missing a wheel, but ${h.unknown} of ${h.packages} couldn't be checked on ${where}${tail}`;
+  }
+  if (h.gaps === 0) {
+    const deps = h.packages === 1 ? "1 dependency has" : `all ${h.packages} dependencies have`;
+    const pyList = sortPythons(pythons).join(", ");
+    const plats = platforms.length === 1 ? "1 platform" : `${platforms.length} platforms`;
+    return `${notChecked ? "" : "✓ "}${repoName}: ${notChecked ? deps.replace(/ (has|have)$/, " checked $1") : deps} a wheel on Python ${pyList} for ${plats}${tail}`;
+  }
+  const verb = h.gaps === 1 ? "has" : "have";
+  const where = h.targets === 1 ? "1 target" : `at least one of ${h.targets} targets`;
+  return `${repoName}: ${h.gaps} of ${h.packages} dependencies ${verb} no wheel on ${where}${tail}`;
 }
 
 // "Ready for what's next?" shortcuts: the platforms and Pythons people most often move to, that aren't picked yet.

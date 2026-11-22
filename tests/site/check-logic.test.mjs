@@ -3,8 +3,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   parseRepo, inputHint, rawUrl, pickLockfile, autoPick, isSideFile, pickRequestedFile, isReadableFile, fileKind, toQuery, fromQuery, sortPythons, freeThreaded, fixFor, rowsFor, headline,
-  cliCommand, packageCliCommand, projectNameFromMetadata, metadataFiles, fixPrompt, verdictText, nextSteps, validRef, labVerdict, labFor, canonicalName, gapWheelFor,
+  cliCommand, packageCliCommand, projectNameFromMetadata, metadataFiles, fixPrompt, verdictText, shareText, nextSteps, validRef, labVerdict, labFor, canonicalName, gapWheelFor,
   gapWheelFixText, withoutUnreadable, unreadableReason, tileText, missedText, privateText, badgeMarkdown, trimProject, trimReleases,
+  fixLinks, validIssuesUrl,
 } from "../../site/check/check-logic.mjs";
 
 test("PyPI trimming keeps the pinned consumer's fields without changing the input", () => {
@@ -453,6 +454,80 @@ test("the verdict reads right for one target and many", () => {
   assert.equal(verdictText({ gaps: 0, unknown: 0, packages: 0, targets: 4 }), "No packages were checked");
 });
 
+test("shareText formats clean, gaps, unknowns, single target, and special characters as plain text", () => {
+  const url = "https://wheelgap.github.io/tracker/check/?repo=owner/name";
+  const sixPlatforms = ["linux-x86_64", "linux-aarch64", "musl-x86_64", "macos-arm64", "win-amd64", "win-arm64"];
+  assert.equal(
+    shareText("owner/name", { gaps: 0, unknown: 0, packages: 212, targets: 12 }, ["3.14", "3.13"], sixPlatforms, url),
+    `✓ owner/name: all 212 dependencies have a wheel on Python 3.13, 3.14 for 6 platforms (checked with wheelgap) ${url}`,
+  );
+  assert.equal(
+    shareText("owner/name", { gaps: 3, unknown: 0, packages: 212, targets: 6 }, ["3.14"], sixPlatforms, url),
+    `owner/name: 3 of 212 dependencies have no wheel on at least one of 6 targets (checked with wheelgap) ${url}`,
+  );
+  // Unknowns must never carry a ✓.
+  const withUnknown = shareText("owner/name", { gaps: 0, unknown: 2, packages: 212, targets: 6 }, ["3.14"], sixPlatforms, url);
+  assert.equal(
+    withUnknown,
+    `owner/name: no dependency is missing a wheel, but 2 of 212 couldn't be checked on some targets (checked with wheelgap) ${url}`,
+  );
+  assert.ok(!withUnknown.includes("✓"));
+  // One target / one platform / one gap.
+  assert.equal(
+    shareText("owner/name", { gaps: 0, unknown: 0, packages: 1, targets: 1 }, ["3.14"], ["linux-x86_64"], url),
+    `✓ owner/name: 1 dependency has a wheel on Python 3.14 for 1 platform (checked with wheelgap) ${url}`,
+  );
+  assert.equal(
+    shareText("owner/name", { gaps: 1, unknown: 0, packages: 10, targets: 1 }, ["3.14"], ["linux-x86_64"], url),
+    `owner/name: 1 of 10 dependencies has no wheel on 1 target (checked with wheelgap) ${url}`,
+  );
+  assert.equal(
+    shareText("owner/name", { gaps: 0, unknown: 1, packages: 10, targets: 1 }, ["3.14"], ["linux-x86_64"], url),
+    `owner/name: no dependency is missing a wheel, but 1 of 10 couldn't be checked on 1 target (checked with wheelgap) ${url}`,
+  );
+  // Nothing checked: never a ✓.
+  assert.equal(
+    shareText("owner/name", { gaps: 0, unknown: 0, packages: 0, targets: 4 }, ["3.14"], ["linux-x86_64"], url),
+    `owner/name: no dependencies were checked (checked with wheelgap) ${url}`,
+  );
+  // Plain text, never HTML-escaped: characters like <, >, &, ", ' stay verbatim.
+  const rawName = `a&b/<c>"d'`;
+  const line = shareText(rawName, { gaps: 0, unknown: 0, packages: 5, targets: 1 }, ["3.14"], ["linux-x86_64"], url);
+  assert.equal(
+    line,
+    `✓ a&b/<c>"d': all 5 dependencies have a wheel on Python 3.14 for 1 platform (checked with wheelgap) ${url}`,
+  );
+  assert.ok(!line.includes("&amp;") && !line.includes("&lt;"));
+});
+
+test("shareText never reads as fully clean when a private index's packages weren't checked", () => {
+  // The line is pasted without the page's alerts, so it says how many were left off pypi.org, and drops the ✓.
+  const url = "https://wheelgap.github.io/tracker/check/?repo=owner/name";
+  const clean = { gaps: 0, unknown: 0, packages: 12, targets: 2 };
+  const line = shareText("owner/name", clean, ["3.14"], ["linux-x86_64", "win-amd64"], url, 5);
+  assert.equal(
+    line,
+    `owner/name: all 12 dependencies checked have a wheel on Python 3.14 for 2 platforms; 5 more weren't checked (their index isn't known to be PyPI) (checked with wheelgap) ${url}`,
+  );
+  assert.ok(!line.includes("✓"));
+  assert.equal(
+    shareText("owner/name", { ...clean, packages: 1 }, ["3.14"], ["linux-x86_64"], url, 1),
+    `owner/name: 1 dependency checked has a wheel on Python 3.14 for 1 platform; 1 more wasn't checked (their index isn't known to be PyPI) (checked with wheelgap) ${url}`,
+  );
+  assert.equal(
+    shareText("owner/name", { ...clean, gaps: 2 }, ["3.14"], ["linux-x86_64"], url, 3),
+    `owner/name: 2 of 12 dependencies have no wheel on at least one of 2 targets; 3 more weren't checked (their index isn't known to be PyPI) (checked with wheelgap) ${url}`,
+  );
+  // Every package private: nothing was checked, and the line says only that.
+  assert.equal(
+    shareText("owner/name", { ...clean, packages: 0 }, ["3.14"], ["linux-x86_64"], url, 4),
+    `owner/name: no dependencies were checked (checked with wheelgap) ${url}`,
+  );
+  // No private packages: the line is unchanged, ✓ and all.
+  assert.equal(shareText("owner/name", clean, ["3.14"], ["linux-x86_64"], url, 0), shareText("owner/name", clean, ["3.14"], ["linux-x86_64"], url));
+  assert.match(shareText("owner/name", clean, ["3.14"], ["linux-x86_64"], url), /^✓ /);
+});
+
 test("next steps offer what isn't picked yet, as whole selections", () => {
   const steps = nextSteps(["3.14"], ["linux-x86_64"]);
   assert.deepEqual(steps.map((s) => s.label), ["Free-threaded 3.14t", "Windows on ARM", "Linux ARM64", "Alpine Linux", "Python 3.15", "Everything"]);
@@ -593,3 +668,86 @@ test("the copy prompt includes only the driver's gap wheel instructions", () => 
   assert.match(prompt, /unofficial, built by wheelgap/);
   assert.ok(prompt.includes(gapWheels.text));
 });
+
+test("fixLinks picks a row's links under Fix: none, loses, gap wheel, private, and invalid issues URLs", () => {
+  const rNone = { name: "demo-pkg", version: "1.0", gaps: ["3.14 linux-x86_64"], lookup: true };
+  const fNone = { kind: "none", text: "no newer release has a wheel" };
+
+  // 1. none with issues_url:
+  const withIssues = fixLinks(rNone, fNone, { ok: true, issues_url: "https://github.com/org/demo/issues" });
+  assert.deepEqual(withIssues, [
+    { text: "coverage and build results", href: "../p/demo-pkg/" },
+    { text: "ask the maintainers", href: "https://github.com/org/demo/issues", rel: "noopener nofollow" },
+  ]);
+
+  // none without issues_url:
+  const withoutIssues = fixLinks(rNone, fNone, { ok: true });
+  assert.deepEqual(withoutIssues, [
+    { text: "coverage and build results", href: "../p/demo-pkg/" },
+  ]);
+
+  // 2. loses:
+  const fLoses = { kind: "loses", text: "only releases that drop a wheel elsewhere" };
+  const losesLinks = fixLinks(rNone, fLoses, { ok: true, issues_url: "https://github.com/org/demo/issues" });
+  assert.deepEqual(losesLinks, [
+    { text: "coverage and build results", href: "../p/demo-pkg/" },
+    { text: "ask the maintainers", href: "https://github.com/org/demo/issues", rel: "noopener nofollow" },
+  ]);
+
+  // 3. a row a gap wheel fills (no links needed):
+  const gapWheels = {
+    cells: [{ name: "demo-pkg", version: "1.0", target: "3.14 linux-x86_64" }],
+    text: "gap-wheels",
+    unofficial: "unofficial",
+  };
+  assert.deepEqual(fixLinks(rNone, fNone, { ok: true, issues_url: "https://github.com/org/demo/issues" }, gapWheels), []);
+
+  // 4. private (none):
+  const rPriv = { name: "corp-lib", version: "1.0", gaps: ["3.14 linux-x86_64"], lookup: false };
+  const fPriv = { kind: "private", text: "not looked up" };
+  assert.deepEqual(fixLinks(rPriv, fPriv, { ok: true, issues_url: "https://github.com/org/demo/issues" }), []);
+
+  // 5. an issues_url that isn't https or is on an unknown host (dropped):
+  const notHttps = fixLinks(rNone, fNone, { ok: true, issues_url: "http://insecure.example/issues" });
+  assert.deepEqual(notHttps, [{ text: "coverage and build results", href: "../p/demo-pkg/" }]);
+
+  const noHost = fixLinks(rNone, fNone, { ok: true, issues_url: "https:///issues" });
+  assert.deepEqual(noHost, [{ text: "coverage and build results", href: "../p/demo-pkg/" }]);
+
+  const userinfo = fixLinks(rNone, fNone, { ok: true, issues_url: "https://github.com@evil.example/issues" });
+  assert.deepEqual(userinfo, [{ text: "coverage and build results", href: "../p/demo-pkg/" }]);
+
+  const controlChar = fixLinks(rNone, fNone, { ok: true, issues_url: "https://github.com/org/demo/issues\n" });
+  assert.deepEqual(controlChar, [{ text: "coverage and build results", href: "../p/demo-pkg/" }]);
+
+  // A package the tracker doesn't have, or no answer yet: no links (loadLab() keeps no issues_url for it).
+  assert.deepEqual(fixLinks(rNone, fNone, { ok: false, builds: [], issues_url: null }), []);
+  assert.deepEqual(fixLinks(rNone, fNone, null), []);
+
+  // fixPrompt includes the issue tracker URL for none and loses groups when known
+  const prompt = fixPrompt(
+    "o/r",
+    { lockfile: "uv.lock", rows: [rNone] },
+    { "demo-pkg==1.0": { found: {}, loses: [] } },
+    ["3.14"],
+    ["linux-x86_64"],
+    null,
+    { "demo-pkg": { issues_url: "https://github.com/org/demo/issues" } }
+  );
+  assert.match(prompt, /- demo-pkg 1\.0: 3\.14 linux-x86_64 \(ask the maintainers: https:\/\/github\.com\/org\/demo\/issues\)/);
+});
+
+test("validIssuesUrl makes the package page's valid_issues_url() check, host by any name", () => {
+  // scripts/build_pages.py's valid_issues_url() has no list of hosts: any https URL with a host that isn't user@,
+  // with printable ASCII only. The page links what the package page links, and nothing it refuses.
+  for (const yes of ["https://github.com/o/r/issues", "https://bugs.launchpad.net/x", "https://jira.example.org/browse/X",
+    "HTTPS://gitlab.com/o/r/-/issues", "https://localhost/issues", "https://github.com:443/o/r/issues?q=is%3Aopen#top"]) {
+    assert.equal(validIssuesUrl(yes), true, yes);
+  }
+  for (const no of ["http://github.com/o/r/issues", "https:///issues", "https://", "https://a@b.example/", "https://@b.example/",
+    "https://:@b.example/", "https://b.example/ x", "https://b.example/\u00e9", "https://b.example/\x1b[2J", "javascript:alert(1)",
+    "//github.com/o/r", "", null, undefined, 42]) {
+    assert.equal(validIssuesUrl(no), false, String(no));
+  }
+});
+
