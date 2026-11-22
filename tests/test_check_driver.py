@@ -568,6 +568,20 @@ def test_a_settings_file_the_repo_lists_but_the_worker_couldnt_fetch_keeps_the_f
     assert json.loads(driver.needs(str(tmp_path), "app/pyproject.toml", listing))["total"] == 1
 
 
+def test_a_settings_file_named_in_another_case_keeps_the_file_private(tmp_path):
+    # A checkout on macOS or Windows reads Pyproject.toml as pyproject.toml; the browser's disk never would, so it's
+    # never fetched, and the file stays private as if it couldn't be.
+    (tmp_path / "requirements.txt").write_text("corp-secret-lib==1.0\n", encoding="utf-8")
+    listing = json.loads(driver.plan(json.dumps(["requirements.txt", "Pyproject.toml", "docs/UV.TOML"])))["configs"]
+    assert listing == ["Pyproject.toml", "docs/UV.TOML"]
+    assert json.loads(driver.configs_for("requirements.txt", json.dumps(listing))) == []
+    r = kept_private(tmp_path, "requirements.txt", json.dumps(listing))
+    assert r["configs_unread"] == ["Pyproject.toml"]  # docs/ isn't above the file
+    # Even written to disk under that name, it's never one this page reads.
+    (tmp_path / "Pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    assert kept_private(tmp_path, "requirements.txt", json.dumps(listing))["configs_unread"] == ["Pyproject.toml"]
+
+
 @pytest.mark.parametrize("listing", ["null", None, "{}", '["pyproject.toml", 1]'])
 def test_without_the_repos_list_of_settings_files_nothing_is_looked_up(repo, listing):
     # GitHub cut the file list short (the worker passes null), or the list is missing or malformed: a settings file
@@ -612,6 +626,9 @@ def test_the_settings_files_are_the_ones_the_pinned_wheelgap_reads():
     import inspect
 
     assert driver.CONFIG_NAMES == tuple(sources._CONFIG_FILES)
+    # Read from the input's folder and every folder above it, up to the first with a .git: what configs_for() names.
+    walk = inspect.getsource(sources._nearby_config_names_an_index)
+    assert "for directory in (folder, *folder.parents):" in walk and '(directory / ".git").exists()' in walk
     callers = {
         kind for kind, read in sources.READERS.items() if "_nearby_config_names_an_index" in inspect.getsource(read)
     }

@@ -179,7 +179,8 @@ def plan(paths_json: str) -> str:
             "templates": sorted(templates),
             "python_version": ".python-version" if ".python-version" in paths else None,
             # Every installer settings file in the repo, wherever it is: configs_for() picks the ones a check reads.
-            "configs": sorted(p for p in paths if PurePosixPath(p).name in CONFIG_NAMES),
+            # In any case: on a case-insensitive disk (macOS, Windows) wheelgap reads a Pyproject.toml too.
+            "configs": sorted(p for p in paths if PurePosixPath(p).name.lower() in CONFIG_NAMES),
         }
     )
 
@@ -192,11 +193,18 @@ def _reads_nearby_configs(path: str) -> bool:
         return False
 
 
-def _configs_near(path: str, configs: list[str]) -> list[str]:
-    """The paths in `configs` that wheelgap reads for `path`: in its folder or a folder above it, by CONFIG_NAMES."""
+def _configs_near(path: str, configs: list[str], *, any_case: bool = False) -> list[str]:
+    """The paths in `configs` that wheelgap reads for `path`: in its folder or a folder above it, by CONFIG_NAMES.
+    `any_case`: also the ones named so in another case (Pyproject.toml), which wheelgap reads on a case-insensitive
+    disk but not on the browser's, so they can only ever count as unread."""
     folder = PurePosixPath(path).parent
     folders = {folder, *folder.parents}
-    return sorted(c for c in configs if PurePosixPath(c).name in CONFIG_NAMES and PurePosixPath(c).parent in folders)
+    return sorted(
+        c
+        for c in configs
+        if (PurePosixPath(c).name.lower() if any_case else PurePosixPath(c).name) in CONFIG_NAMES
+        and PurePosixPath(c).parent in folders
+    )
 
 
 def _configs_listing(configs_json: str | None) -> list[str] | None:
@@ -224,13 +232,18 @@ def _unread_configs(root: str, path: str, configs_json: str | None) -> dict | No
     """Why `path` has to stay private because wheelgap couldn't read every installer settings file it would on disk,
     or None when it could (or reads none). `unknown`: the repo's list of them isn't known (GitHub cut the file list
     short, or the worker didn't pass it), so one may be missing. `unread`: ones the repo has that the worker didn't
-    manage to fetch. Either way wheelgap would take the file as PyPI-only without them, so the page doesn't."""
+    manage to fetch, or that are named in another case (Pyproject.toml: read on a macOS or Windows checkout, never
+    fetched here). Either way wheelgap would take the file as PyPI-only without them, so the page doesn't."""
     if not _reads_nearby_configs(path):
         return None
     configs = _configs_listing(configs_json)
     if configs is None:
         return {"unknown": True, "unread": []}
-    unread = [c for c in _configs_near(path, configs) if not (Path(root) / c).is_file()]
+    unread = [
+        c
+        for c in _configs_near(path, configs, any_case=True)
+        if PurePosixPath(c).name not in CONFIG_NAMES or not (Path(root) / c).is_file()
+    ]
     return {"unknown": False, "unread": unread} if unread else None
 
 

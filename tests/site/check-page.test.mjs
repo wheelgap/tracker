@@ -335,6 +335,26 @@ test("the worker keeps a truncated tree's settings files unknown, and stops whee
   assert.match(load, /py\.FS\.mkdirTree\(`\$\{root\}\/\.git`\)/);
 });
 
+test("build lab results are fetched only for gap rows the driver marked as PyPI packages", async () => {
+  // A uv.lock, poetry.lock or pylock.toml can pin a package to a private index: check() marks its row `lookup: false`,
+  // and its name must not be requested from the tracker's pages either.
+  const source = read("check.mjs").match(/^async function loadLab\(.*?^}$/ms);
+  assert.ok(source, "loadLab is in check.mjs");
+  const urls = [];
+  const fetch = async (url) => { urls.push(String(url)); return { ok: true, json: async () => ({ builds: [] }) }; };
+  const state = { lab: {}, result: null };
+  const loadLab = new Function("state", "fetch", "canonicalName", "LAB_LOOKUPS", "location", "renderTable", `${source[0]}; return loadLab;`)(
+    state, fetch, checkLogic.canonicalName, 120, { href: "https://wheelgap.github.io/tracker/check/" }, () => {},
+  );
+  await loadLab({ rows: [
+    { name: "corp-secret-lib", version: "1.0", gaps: ["3.14 linux-x86_64"], lookup: false },
+    { name: "Fast_Lib", version: "2.0", gaps: ["3.14 linux-x86_64"], lookup: true },
+    { name: "unknown-only", version: "1.0", gaps: [], lookup: false },
+  ] });
+  assert.deepEqual(urls, ["https://wheelgap.github.io/tracker/data/packages/fast-lib.json"]);
+  assert.deepEqual(Object.keys(state.lab), ["fast-lib"]);
+});
+
 test("the badge is a small static image on the page's own origin, offered as Markdown under the copy buttons", () => {
   const svg = read("badge.svg");
   assert.ok(Buffer.byteLength(svg) < 1500, "around 1 KB");

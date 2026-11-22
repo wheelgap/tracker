@@ -194,7 +194,7 @@ export function privatePyprojectReason(result) {
   if (!(!result.error && result.looked_up && result.lockfile?.split("/").pop() === "pyproject.toml"
     && result.packages === 0 && result.listed > 0 && result.private_count === result.listed)) return null;
   if (result.configs_unknown) return "GitHub listed only part of the repo's files, so installer settings that apply to it may be missing";
-  if (result.configs_unread?.length) return `installer settings that apply to it couldn't be fetched (${result.configs_unread.join(", ")})`;
+  if (result.configs_unread?.length) return `installer settings that apply to it couldn't be read here (${result.configs_unread.join(", ")})`;
   return "its index or source settings don't identify which packages are from PyPI";
 }
 
@@ -233,8 +233,8 @@ export function missedText(missed, lockfile) {
 
 // Why a looked-up file's packages were kept off pypi.org (driver.check's `private`), or null when none were. The
 // driver keeps them off when the file, or a uv.toml, pyproject.toml or pdm.toml beside it or above it (`configs`),
-// names another index, and when one of those settings files the repo has couldn't be fetched (`configs_unread`) or
-// GitHub cut the file list short, so one may be missing from it (`configs_unknown`).
+// names another index; and when one of those settings files the repo has couldn't be fetched or is named in another
+// case (`configs_unread`), or GitHub cut the file list short, so one may be missing from it (`configs_unknown`).
 export function privateText(r) {
   const names = r.private || [];
   if (!names.length) return null;
@@ -244,8 +244,8 @@ export function privateText(r) {
   if (r.configs_unknown || unread.length) {
     const why = r.configs_unknown
       ? `GitHub listed only part of this repo's files, so a uv.toml, pyproject.toml or pdm.toml beside ${r.lockfile} or in a folder above it may be missing from the list`
-      : `${list(unread, 3)} (beside ${r.lockfile} or in a folder above it) couldn't be fetched`;
-    const retry = r.configs_unknown ? `uvx wheelgap ${r.lockfile} in a checkout reads them all.` : "Check again to retry.";
+      : `${list(unread, 3)} (beside ${r.lockfile} or in a folder above it) couldn't be read here`;
+    const retry = r.configs_unknown ? `uvx wheelgap ${r.lockfile} in a checkout reads them all.` : `Check again to retry, or run uvx wheelgap ${r.lockfile} in a checkout.`;
     return `Not checked: ${why}. Such a file can point installers at an index other than PyPI (a [tool.uv] index, say), ${after} ${retry}`;
   }
   const near = (r.configs || []).filter((c) => c !== r.lockfile);

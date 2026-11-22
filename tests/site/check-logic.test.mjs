@@ -272,7 +272,7 @@ test("an all-private pyproject gives way only when automatically picked and anot
   // Repeated names with different markers are separate entries, but the display names are deduplicated.
   assert.equal(unreadableReason({ ...result, listed: 2, private_count: 2, private: ["numpy"] }), reason);
   // Kept private because settings files that apply to it couldn't all be read: the reason says that instead.
-  assert.equal(unreadableReason({ ...result, configs_unread: ["uv.toml"] }), "installer settings that apply to it couldn't be fetched (uv.toml)");
+  assert.equal(unreadableReason({ ...result, configs_unread: ["uv.toml"] }), "installer settings that apply to it couldn't be read here (uv.toml)");
   assert.equal(unreadableReason({ ...result, configs_unknown: true }), "GitHub listed only part of the repo's files, so installer settings that apply to it may be missing");
   assert.equal(unreadableReason({ ...result, configs: ["pyproject.toml"], configs_unread: [] }), reason);
   for (const change of [
@@ -606,10 +606,10 @@ test("the page says why a file's packages were kept off pypi.org, naming the set
     privateText({ ...names, configs: ["pyproject.toml", "app/uv.toml"] }),
     `Not checked: app/requirements.txt or its installer settings (pyproject.toml, app/uv.toml) ${index}, ${after} To check them on that index, run uvx wheelgap --index-url with its URL in a checkout.`,
   );
-  // One that couldn't be fetched, or a file list GitHub cut short: what they say about an index isn't known.
+  // One that couldn't be fetched (or is named in another case), or a file list GitHub cut short: what they say about an index isn't known.
   assert.equal(
     privateText({ ...names, configs_unread: ["pyproject.toml"] }),
-    `Not checked: pyproject.toml (beside app/requirements.txt or in a folder above it) couldn't be fetched. Such a file can point installers at an index other than PyPI (a [tool.uv] index, say), ${after} Check again to retry.`,
+    `Not checked: pyproject.toml (beside app/requirements.txt or in a folder above it) couldn't be read here. Such a file can point installers at an index other than PyPI (a [tool.uv] index, say), ${after} Check again to retry, or run uvx wheelgap app/requirements.txt in a checkout.`,
   );
   assert.equal(
     privateText({ ...names, configs_unknown: true }),

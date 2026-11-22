@@ -23,9 +23,10 @@ const SHOWN = 60;
 const LAB_SHORT = { works: "builds ✓", gil: "builds, GIL on", pure: "builds, pure Python", unsupported: "unsupported here", partial: "no compiled part", broken: "builds, won't load", fails: "won't build", slow: "too slow" };
 const LAB_LOOKUPS = 120;
 
-// The tracker's build lab results for the gap rows' packages, from its own per-package files (same origin).
+// The tracker's build lab results for the gap rows' packages, from its own per-package files (same origin). Only rows
+// the driver marked as PyPI packages (`lookup`): a private index's package name never leaves the browser, here too.
 async function loadLab(result) {
-  const names = [...new Set(result.rows.filter((r) => r.gaps.length).map((r) => canonicalName(r.name)))]
+  const names = [...new Set(result.rows.filter((r) => r.gaps.length && r.lookup).map((r) => canonicalName(r.name)))]
     .filter((n) => /^[a-z0-9]+(-[a-z0-9]+)*$/.test(n) && !(n in state.lab))
     .slice(0, LAB_LOOKUPS);
   let next = 0;
