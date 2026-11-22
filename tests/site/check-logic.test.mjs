@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import {
   parseRepo, inputHint, rawUrl, pickLockfile, autoPick, isSideFile, pickRequestedFile, isReadableFile, fileKind, toQuery, fromQuery, sortPythons, freeThreaded, fixFor, rowsFor, headline,
   cliCommand, packageCliCommand, projectNameFromMetadata, metadataFiles, fixPrompt, verdictText, nextSteps, validRef, labVerdict, labFor, canonicalName, gapWheelFor,
-  gapWheelFixText, withoutUnreadable, unreadableReason, tileText, missedText, badgeMarkdown, trimProject, trimReleases,
+  gapWheelFixText, withoutUnreadable, unreadableReason, tileText, missedText, privateText, badgeMarkdown, trimProject, trimReleases,
 } from "../../site/check/check-logic.mjs";
 
 test("PyPI trimming keeps the pinned consumer's fields without changing the input", () => {
@@ -270,6 +270,10 @@ test("an all-private pyproject gives way only when automatically picked and anot
   assert.equal(withoutUnreadable([locks[0]], result.lockfile, true), null);
   // Repeated names with different markers are separate entries, but the display names are deduplicated.
   assert.equal(unreadableReason({ ...result, listed: 2, private_count: 2, private: ["numpy"] }), reason);
+  // Kept private because settings files that apply to it couldn't all be read: the reason says that instead.
+  assert.equal(unreadableReason({ ...result, configs_unread: ["uv.toml"] }), "installer settings that apply to it couldn't be fetched (uv.toml)");
+  assert.equal(unreadableReason({ ...result, configs_unknown: true }), "GitHub listed only part of the repo's files, so installer settings that apply to it may be missing");
+  assert.equal(unreadableReason({ ...result, configs: ["pyproject.toml"], configs_unread: [] }), reason);
   for (const change of [
     { packages: 1, private_count: 2 }, // some packages were checked
     { private_count: 2 }, // another package was skipped for a different reason, or excluded by markers
@@ -509,6 +513,36 @@ test("the page says why lookups got no answer, and nothing when they all did", (
     missedText({ cap: 300, over_cap: 0, not_found: 2, failed: 0 }, "Pipfile.lock"),
     "Not looked up on PyPI, so shown as unknown: 2 that PyPI doesn't have under that name or version.",
   );
+});
+
+test("the page says why a file's packages were kept off pypi.org, naming the settings files behind it", () => {
+  const base = { lockfile: "app/requirements.txt", private: [], configs: [], configs_unread: [], configs_unknown: false };
+  assert.equal(privateText(base), null);
+  assert.equal(privateText({ lockfile: "uv.lock", skipped: [] }), null); // a result from before the fields existed
+  const names = { ...base, private: ["corp-secret-lib"] };
+  const after = "so these may not be PyPI's packages and their names aren't sent to pypi.org: corp-secret-lib.";
+  const index = "names an index or source other than PyPI (an --index-url or --extra-index-url line, a [tool.uv] index or sources setting, a Pipfile source)";
+  assert.equal(
+    privateText(names),
+    `Not checked: app/requirements.txt ${index}, ${after} To check them on that index, run uvx wheelgap --index-url with its URL in a checkout.`,
+  );
+  // The settings files read for it may be the ones that name it.
+  assert.equal(
+    privateText({ ...names, configs: ["pyproject.toml", "app/uv.toml"] }),
+    `Not checked: app/requirements.txt or its installer settings (pyproject.toml, app/uv.toml) ${index}, ${after} To check them on that index, run uvx wheelgap --index-url with its URL in a checkout.`,
+  );
+  // One that couldn't be fetched, or a file list GitHub cut short: what they say about an index isn't known.
+  assert.equal(
+    privateText({ ...names, configs_unread: ["pyproject.toml"] }),
+    `Not checked: pyproject.toml (beside app/requirements.txt or in a folder above it) couldn't be fetched. Such a file can point installers at an index other than PyPI (a [tool.uv] index, say), ${after} Check again to retry.`,
+  );
+  assert.equal(
+    privateText({ ...names, configs_unknown: true }),
+    `Not checked: GitHub listed only part of this repo's files, so a uv.toml, pyproject.toml or pdm.toml beside app/requirements.txt or in a folder above it may be missing from the list. Such a file can point installers at an index other than PyPI (a [tool.uv] index, say), ${after} uvx wheelgap app/requirements.txt in a checkout reads them all.`,
+  );
+  const many = privateText({ ...base, private: Array.from({ length: 10 }, (_, i) => `p${i}`), configs_unread: ["a/pdm.toml", "a/uv.toml", "pdm.toml", "uv.toml"] });
+  assert.match(many, /^Not checked: a\/pdm\.toml, a\/uv\.toml, pdm\.toml, and 1 more \(beside/);
+  assert.match(many, /p0, p1, p2, p3, p4, p5, p6, p7, and 2 more\./);
 });
 
 test("refs with '..' or empty segments are refused", () => {

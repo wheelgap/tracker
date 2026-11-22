@@ -15,6 +15,9 @@ const MAX_FIX_LOOKUPS = 80;
 const MAX_GAP_WHEELS_BYTES = 4 * 1024 * 1024;
 const GAP_WHEELS_URL = "https://wheelgap.github.io/wheels/data/gap-wheels.json";
 const MAX_LOOKUPS = 300; // more packages than that stay unknown, never counted as gaps
+// The installer settings files wheelgap reads beside a requirements file, a pyproject.toml or a Pipfile.lock and in the
+// folders above it (driver.CONFIG_NAMES; tests/test_check_driver.py checks they match).
+const CONFIG_NAMES = ["uv.toml", "pyproject.toml", "pdm.toml"];
 
 let latestCheck = null;
 let gapWheelList = null; // one request, including a failed one, for the life of this worker
@@ -122,6 +125,9 @@ async function load(r, id, requestedFile = null) {
     }
   });
   py.FS.mkdirTree(root);
+  // As in a checkout, wheelgap's walk up for installer settings files (configs_for in driver.py) stops at the repo's
+  // root, the first folder with a .git: none above it is read.
+  py.FS.mkdirTree(`${root}/.git`);
   const detected = JSON.parse(driver.detect(root));
   detected.unreadable.push(...unread);
   let projectName = null;
@@ -140,17 +146,20 @@ async function load(r, id, requestedFile = null) {
     throw new Failure("stale", "superseded by a newer load"); // the page has moved on and ignores this
   }
   for (const old of [...loaded.keys()]) forget(py, old);
-  loaded.set(root, { ...r, ref, root, fetched: new Set() });
+  // `configs`: the repo's installer settings files, or null when GitHub cut the file list short, so one may be missing
+  // from it: then the driver keeps every file that reads them private.
+  loaded.set(root, { ...r, ref, root, fetched: new Set(), configs: tree.truncated ? null : plan.configs });
   return { plan, detected, truncated: Boolean(tree.truncated), ref, root, fileInTree, projectName };
 }
 
-// A pyproject.toml is fetched when it's the file to check. wheelgap also reads one beside a lockfile or a
-// requirements file, when it's there, for the project's settings ([tool.uv] no-binary, an index), so any other one is
-// removed before the driver reads `lockfile`: each file reads as it does when it's the first one checked, whichever
-// file the visitor looked at before it.
-function dropOtherProjects(py, repo, lockfile) {
+// A pyproject.toml is fetched when it's the file to check, and installer settings files (a pyproject.toml, uv.toml or
+// pdm.toml) when they're beside the file to check or above it (fetchConfigs). wheelgap also reads a pyproject.toml
+// beside a lockfile, when it's there, for the project's settings ([tool.uv] no-binary, an index), so any of them that
+// isn't `keep` (the file to check and its own settings files) is removed before the driver reads that file: each
+// file reads as it does when it's the first one checked, whichever file the visitor looked at before it.
+function dropOtherProjects(py, repo, keep) {
   for (const path of [...repo.fetched]) {
-    if (path === lockfile || path.split("/").pop() !== "pyproject.toml") continue;
+    if (keep.includes(path) || !CONFIG_NAMES.includes(path.split("/").pop())) continue;
     try {
       py.FS.unlink(`${repo.root}/${path}`);
     } catch {
@@ -160,17 +169,47 @@ function dropOtherProjects(py, repo, lockfile) {
   }
 }
 
+// The repo's installer settings files (plan()'s `configs`) for the driver, always as a string: "null" when they
+// aren't known, which keeps every file that reads them private.
+function configsJson(repo) {
+  return JSON.stringify(Array.isArray(repo.configs) ? repo.configs : null);
+}
+
+// wheelgap takes a requirements file, a pyproject.toml or a Pipfile.lock as PyPI's alone only if no uv.toml,
+// pyproject.toml or pdm.toml in its folder or a folder above it names another index (a [tool.uv] index, say), which it
+// reads from disk. So the ones the repo has there (the driver's configs_for) are fetched before the driver reads the
+// file, and kept while it does: returns them, for dropOtherProjects. One that can't be fetched is left out, and the
+// driver, finding it in the repo's list but not on disk, looks nothing of the file up on PyPI.
+async function fetchConfigs(id, repo, lockfile) {
+  const { py, driver } = await ready;
+  if (id !== latestCheck) throw new Failure("stale", "superseded by a newer check");
+  const near = JSON.parse(driver.configs_for(lockfile, configsJson(repo)));
+  await pool(near.filter((p) => !repo.fetched.has(p)), 4, async (p) => {
+    let bytes;
+    try {
+      bytes = await getText(rawUrl(repo, repo.ref, p));
+    } catch {
+      return; // not on disk, so the driver keeps the file private and the page says why
+    }
+    if (!loaded.has(repo.root)) return; // don't recreate a removed root
+    write(py, repo.root, p, bytes);
+    repo.fetched.add(p);
+  });
+  if (!loaded.has(repo.root)) throw new Failure("stale", "superseded by a newer load");
+  return near;
+}
+
 // Asks the driver which packages a lookups file (requirements file, pyproject.toml, Pipfile.lock, pixi.lock)
 // needs looked up, fetching its includes (-r, -c) from the same repo and ref when it names them. An include
 // that's a URL, or outside the repo, comes back as an error naming it and stops here. A file wheelgap can't read
 // needs no lookups: driver.check() reports why, as it does for a lockfile. Only the newest check reads or removes
 // files: a superseded one stops here, so it can't take away the file a newer check is about to read.
-async function lookups(id, repo, lockfile) {
+async function lookups(id, repo, lockfile, keep) {
   const { py, driver } = await ready;
   for (let tries = 0; tries < 10; tries++) {
     if (id !== latestCheck) throw new Failure("stale", "superseded by a newer check");
-    dropOtherProjects(py, repo, lockfile);
-    const n = JSON.parse(driver.needs(repo.root, lockfile));
+    dropOtherProjects(py, repo, keep);
+    const n = JSON.parse(driver.needs(repo.root, lockfile, configsJson(repo)));
     if (!n.error) return n.lookups ?? [];
     if (n.kind !== "include") return [];
     if (!n.path || repo.fetched.has(n.path)) throw new Failure("file", n.error);
@@ -197,7 +236,8 @@ async function check(id, root, lockfile, options) {
   // A file that doesn't list every package's files is checked from PyPI JSON fetched here, the way the CLI
   // does; packages over the cap, or that fail, stay unknown, never counted as gaps. `missed` counts them, for the
   // page to say why: over the cap, not on PyPI (a 404), or a lookup that failed.
-  const wanted = await lookups(id, repo, lockfile);
+  const keep = [lockfile, ...(await fetchConfigs(id, repo, lockfile))];
+  const wanted = await lookups(id, repo, lockfile, keep);
   const fetched = {};
   const missed = { cap: MAX_LOOKUPS, over_cap: Math.max(0, wanted.length - MAX_LOOKUPS), not_found: 0, failed: 0 };
   if (wanted.length) {
@@ -227,9 +267,9 @@ async function check(id, root, lockfile, options) {
   // The driver keeps the last check's targets for fixes(), so a superseded check must never reach it.
   if (id !== latestCheck) throw new Failure("stale", "superseded by a newer check");
   post({ id, type: "progress", stage: "checking" });
-  dropOtherProjects(py, repo, lockfile); // again: a check that this one superseded may have fetched one since
+  dropOtherProjects(py, repo, keep); // again: a check that this one superseded may have fetched one since
   // Always a string: Pyodide may hand a JS null to Python as something other than None.
-  const result = JSON.parse(driver.check(repo.root, lockfile, JSON.stringify(options), JSON.stringify(fetched)));
+  const result = JSON.parse(driver.check(repo.root, lockfile, JSON.stringify(options), JSON.stringify(fetched), configsJson(repo)));
   if (!result.error) result.missed = missed;
   return result;
 }

@@ -62,7 +62,12 @@ test("a result with no package checked shows the verdict and the setup, but no b
 
 // worker.mjs needs a browser and Pyodide, so its check() is run on stand-ins for both: `needs` is what the driver asks
 // to be looked up, `fetch` answers for pypi.org, and `checked` collects what the driver's check() is handed.
-function workerCheck({ needs, fetch, releases = new Map(), lockfile = "requirements.txt", fetched = [lockfile], gone = [] }) {
+// `configs` is the repo's list of installer settings files (null for a truncated tree), `near` what the driver's
+// configs_for() names for the file, and `files` what GitHub answers for them (a missing one fails to fetch).
+function workerCheck({
+  needs, fetch, releases = new Map(), lockfile = "requirements.txt", fetched = [lockfile], gone = [],
+  configs = [], near = [], files = {},
+}) {
   const source = read("worker.mjs");
   const fn = (name) => {
     const found = source.match(new RegExp(`^(?:async )?function ${name}\\(.*?^}$`, "ms"));
@@ -72,26 +77,41 @@ function workerCheck({ needs, fetch, releases = new Map(), lockfile = "requireme
   const checked = [];
   const fixed = [];
   const removed = [];
+  const asked = []; // the driver's needs() calls
+  const nearAsked = []; // the driver's configs_for() calls
+  const requested = []; // files asked of GitHub
+  const written = [];
   // `gone`: paths the worker believes it wrote that aren't in Pyodide's files any more, so removing them throws.
   const unlink = (path) => { removed.push(path); if (gone.includes(path)) throw new Error(`ENOENT: ${path}`); };
   const driver = {
-    needs: () => JSON.stringify(needs),
+    needs: (...args) => { asked.push(args); return JSON.stringify(needs); },
+    configs_for: (...args) => { nearAsked.push(args); return JSON.stringify(near); },
     check: (...args) => { checked.push(args); return JSON.stringify({ rows: [] }); },
     fixes: (...args) => { fixed.push(args); return "{}"; },
   };
-  const repo = { root: "/repos/1", ref: "HEAD", fetched: new Set(fetched) };
+  const repo = { root: "/repos/1", ref: "HEAD", fetched: new Set(fetched), configs };
   const env = {
-    fetch, releases, MAX_LOOKUPS: 300, MAX_FIX_LOOKUPS: 80,
+    fetch, releases, MAX_LOOKUPS: 300, MAX_FIX_LOOKUPS: 80, CONFIG_NAMES: ["uv.toml", "pyproject.toml", "pdm.toml"],
+    rawUrl: (r, ref, path) => `raw:${ref}:${path}`,
+    getText: async (url) => {
+      const path = url.split(":").pop();
+      requested.push(path);
+      if (!(path in files)) throw new Error(`Couldn't fetch ${path} (404).`);
+      return files[path];
+    },
+    write: (py, root, path, bytes) => written.push([root, path, bytes]),
     trimProject: checkLogic.trimProject, trimReleases: checkLogic.trimReleases,
     ready: Promise.resolve({ py: { FS: { unlink } }, driver }),
     loaded: new Map([[repo.root, repo]]),
     post: () => {},
   };
   const made = new Function("env", `
-    const { fetch, releases, MAX_LOOKUPS, MAX_FIX_LOOKUPS, ready, loaded, post, trimProject, trimReleases } = env;
+    const { fetch, releases, MAX_LOOKUPS, MAX_FIX_LOOKUPS, CONFIG_NAMES, ready, loaded, post, trimProject, trimReleases, rawUrl, getText, write } = env;
     let latestCheck = 7;
     class Failure extends Error { constructor(kind, message) { super(message); this.kind = kind; } }
     ${fn("pool")}
+    ${fn("configsJson")}
+    ${fn("fetchConfigs")}
     ${fn("lookups")}
     ${fn("dropOtherProjects")}
     ${fn("check")}
@@ -101,7 +121,10 @@ function workerCheck({ needs, fetch, releases = new Map(), lockfile = "requireme
       fixes: (rows) => fixes(7, rows), supersede: () => { latestCheck = 8; },
     };
   `)(env);
-  return { check: () => made.check(lockfile), fixes: made.fixes, supersede: made.supersede, checked, fixed, releases, removed, repo };
+  return {
+    check: () => made.check(lockfile), fixes: made.fixes, supersede: made.supersede,
+    checked, fixed, releases, removed, repo, asked, nearAsked, requested, written,
+  };
 }
 
 test("check trims pinned and project JSON before the driver and keeps only trimmed releases for fixes", async () => {
@@ -254,6 +277,62 @@ test("a pyproject.toml that was fetched to be checked is gone again before anoth
   assert.deepEqual(missing.removed, ["/repos/1/pyproject.toml", "/repos/1/backend/pyproject.toml"]);
   assert.deepEqual([...missing.repo.fetched], ["uv.lock", "requirements.txt"]);
   assert.equal(missing.checked.length, 1);
+});
+
+test("the settings files beside the file or above it are fetched first, kept for its check, and the list handed over", async () => {
+  // wheelgap reads a pyproject.toml's [tool.uv] index (or a uv.toml's, a pdm.toml's) beside a requirements file or
+  // above it: the driver names the ones the repo has, the worker fetches them, and they stay while the file is read.
+  const fetch = async () => assert.fail("no lookup was asked for");
+  const configs = ["other/pyproject.toml", "other/uv.toml", "pyproject.toml", "services/uv.toml"];
+  const bytes = new Uint8Array([1]);
+  const worker = workerCheck({
+    needs: { lookups: [], total: 0 }, fetch, lockfile: "services/api/requirements.txt", configs,
+    // Fetched for an earlier check of another file: none of them is this one's.
+    fetched: ["services/api/requirements.txt", "other/pyproject.toml", "other/uv.toml", "uv.lock"],
+    near: ["pyproject.toml", "services/uv.toml"], files: { "pyproject.toml": bytes, "services/uv.toml": bytes },
+  });
+  await worker.check();
+  assert.deepEqual(worker.nearAsked, [["services/api/requirements.txt", JSON.stringify(configs)]]);
+  assert.deepEqual(worker.requested.sort(), ["pyproject.toml", "services/uv.toml"]);
+  assert.deepEqual(worker.written.map(([root, path]) => [root, path]).sort(), [["/repos/1", "pyproject.toml"], ["/repos/1", "services/uv.toml"]]);
+  // The other file's settings are gone before the driver reads this one; this one's stay, and so does the lockfile.
+  assert.deepEqual(worker.removed, ["/repos/1/other/pyproject.toml", "/repos/1/other/uv.toml"]);
+  assert.deepEqual([...worker.repo.fetched].sort(), ["pyproject.toml", "services/api/requirements.txt", "services/uv.toml", "uv.lock"]);
+  // The driver gets the repo's whole list, to tell a settings file that wasn't fetched from one that isn't there.
+  assert.deepEqual(worker.asked, [["/repos/1", "services/api/requirements.txt", JSON.stringify(configs)]]);
+  assert.equal(worker.checked.length, 1);
+  assert.deepEqual([worker.checked[0][1], worker.checked[0][4]], ["services/api/requirements.txt", JSON.stringify(configs)]);
+  // Checked again, nothing is fetched twice.
+  const again = worker.requested.length;
+  await worker.check();
+  assert.equal(worker.requested.length, again);
+});
+
+test("a settings file that fails to fetch isn't written, and the driver is still handed the list that names it", async () => {
+  // The driver finds it in the list but not on disk, and keeps the file private: the check goes on and says why.
+  const fetch = async () => assert.fail("no lookup was asked for");
+  const worker = workerCheck({ needs: { lookups: [], total: 0 }, fetch, configs: ["pyproject.toml"], near: ["pyproject.toml"] });
+  await worker.check();
+  assert.deepEqual([worker.requested, worker.written], [["pyproject.toml"], []]);
+  assert.deepEqual([...worker.repo.fetched], ["requirements.txt"]); // tried again on the next check
+  assert.equal(worker.asked[0][2], '["pyproject.toml"]');
+  assert.equal(worker.checked[0][4], '["pyproject.toml"]');
+  await worker.check();
+  assert.deepEqual(worker.requested, ["pyproject.toml", "pyproject.toml"]);
+});
+
+test("with a truncated file list the driver is handed null for the settings files, always as text", async () => {
+  const fetch = async () => assert.fail("no lookup was asked for");
+  const worker = workerCheck({ needs: { lookups: [], total: 0 }, fetch, configs: null });
+  await worker.check();
+  assert.deepEqual([worker.nearAsked[0][1], worker.asked[0][2], worker.checked[0][4]], ["null", "null", "null"]);
+  assert.deepEqual(worker.requested, []);
+});
+
+test("the worker keeps a truncated tree's settings files unknown, and stops wheelgap's walk at the repo's root", () => {
+  const load = read("worker.mjs").match(/^async function load\(.*?^}$/ms)[0];
+  assert.match(load, /configs: tree\.truncated \? null : plan\.configs/);
+  assert.match(load, /py\.FS\.mkdirTree\(`\$\{root\}\/\.git`\)/);
 });
 
 test("the badge is a small static image on the page's own origin, offered as Markdown under the copy buttons", () => {

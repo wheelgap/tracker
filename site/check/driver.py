@@ -42,6 +42,15 @@ LOOKUPS = tuple(name for name in LOCKFILES if name not in OFFLINE) + ("pyproject
 GAPS = (Status.SOURCE, Status.MISSING)  # no wheel; UNKNOWN (couldn't be checked) is reported apart
 MAX_LOCKFILES = 30
 MAX_DOCKERFILES = 40
+# The installer settings files wheelgap reads from a requirements file's, a pyproject.toml's or a Pipfile.lock's
+# folder and every folder above it, up to the repository root, to tell whether they point an installer at another
+# index (sources._nearby_config_names_an_index, which reads sources._CONFIG_FILES): uv applies [tool.uv] to
+# `uv pip install -r`, and `uv export` writes no index lines. NEARBY_CONFIG_READERS are the readers (load_file's
+# `kind`) that call it. The browser has only the files the worker fetched, so the worker fetches these for the file
+# being checked (configs_for), and needs() and check() keep the file private when one the repo has isn't there to
+# read. tests/test_check_driver.py checks both lists against the pinned release.
+CONFIG_NAMES = ("uv.toml", "pyproject.toml", "pdm.toml")
+NEARBY_CONFIG_READERS = ("requirements", "pyproject", "pipfile")
 
 try:
     from wheelgap import gapwheels
@@ -169,8 +178,60 @@ def plan(paths_json: str) -> str:
             "more_dockerfiles": max(0, len(dockerfiles) - MAX_DOCKERFILES),
             "templates": sorted(templates),
             "python_version": ".python-version" if ".python-version" in paths else None,
+            # Every installer settings file in the repo, wherever it is: configs_for() picks the ones a check reads.
+            "configs": sorted(p for p in paths if PurePosixPath(p).name in CONFIG_NAMES),
         }
     )
+
+
+def _reads_nearby_configs(path: str) -> bool:
+    """Whether wheelgap's reader for `path` reads the installer settings files near it (NEARBY_CONFIG_READERS)."""
+    try:
+        return file_kind(Path(path)) in NEARBY_CONFIG_READERS
+    except SourceError:  # not a file wheelgap reads: check() says so
+        return False
+
+
+def _configs_near(path: str, configs: list[str]) -> list[str]:
+    """The paths in `configs` that wheelgap reads for `path`: in its folder or a folder above it, by CONFIG_NAMES."""
+    folder = PurePosixPath(path).parent
+    folders = {folder, *folder.parents}
+    return sorted(c for c in configs if PurePosixPath(c).name in CONFIG_NAMES and PurePosixPath(c).parent in folders)
+
+
+def _configs_listing(configs_json: str | None) -> list[str] | None:
+    """plan()'s `configs` as the worker passes it, or None when it doesn't know them (a truncated file list)."""
+    try:
+        configs = json.loads(configs_json) if configs_json else None
+    except ValueError:
+        return None
+    if isinstance(configs, list) and all(isinstance(c, str) for c in configs):
+        return configs
+    return None
+
+
+def configs_for(path: str, configs_json: str | None) -> str:
+    """The installer settings files the worker fetches before `path` is checked: the ones in the repo (plan()'s
+    `configs`) that wheelgap would read for it from disk, in its folder or a folder above it. Empty for a file whose
+    reader reads none (a lockfile read offline, a pixi.lock), or when the repo's list isn't known."""
+    configs = _configs_listing(configs_json)
+    if configs is None or not _reads_nearby_configs(path):
+        return json.dumps([])
+    return json.dumps(_configs_near(path, configs))
+
+
+def _unread_configs(root: str, path: str, configs_json: str | None) -> dict | None:
+    """Why `path` has to stay private because wheelgap couldn't read every installer settings file it would on disk,
+    or None when it could (or reads none). `unknown`: the repo's list of them isn't known (GitHub cut the file list
+    short, or the worker didn't pass it), so one may be missing. `unread`: ones the repo has that the worker didn't
+    manage to fetch. Either way wheelgap would take the file as PyPI-only without them, so the page doesn't."""
+    if not _reads_nearby_configs(path):
+        return None
+    configs = _configs_listing(configs_json)
+    if configs is None:
+        return {"unknown": True, "unread": []}
+    unread = [c for c in _configs_near(path, configs) if not (Path(root) / c).is_file()]
+    return {"unknown": False, "unread": unread} if unread else None
 
 
 def _python_version_file(root: Path) -> str | None:
@@ -226,7 +287,9 @@ def _private(source: Source, pkg: Package) -> bool:
     CLI. A pixi.lock records where each of its files came from, so that is all there is to ask of it. A
     requirements file, a pyproject.toml or a Pipfile.lock names an index for the whole input, if it names one
     (an --index-url or --extra-index-url line, an installer's index setting, a Pipfile source), so none of its
-    packages is known to be PyPI's: the page looks none of them up and says so, where the CLI would ask PyPI.
+    packages is known to be PyPI's: the page looks none of them up and says so, where the CLI would ask PyPI. That
+    includes a uv.toml, pyproject.toml or pdm.toml beside it or above it naming one, and one the page couldn't read
+    (see _unread_configs).
     """
     if not pypi.may_look_up(pkg.registry):
         return True
@@ -254,7 +317,16 @@ def _lookup_key(pkg: Package) -> str:
     return f"{name}=={pkg.version}" if pkg.version else name
 
 
-def needs(root: str, path: str) -> str:
+def _keep_private_without_configs(source: Source, root: str, path: str, configs_json: str | None) -> dict | None:
+    """As wheelgap does with a settings file it can't read: a file whose nearby settings files weren't all read is
+    not known to be PyPI-only (_unread_configs says why)."""
+    why = _unread_configs(root, path, configs_json)
+    if why:
+        source.pypi_only = False
+    return why
+
+
+def needs(root: str, path: str, configs_json: str | None = None) -> str:
     """The PyPI lookups checking `path` needs: every package wheelgap's pypi.fill_all() would look up, with its
     canonical name and pinned version or null, each once. A package that has to stay off pypi.org (see _private) is
     never listed. A lockfile check() reads offline needs none: it's checked from the files it lists, or not at all.
@@ -262,6 +334,9 @@ def needs(root: str, path: str) -> str:
     Requirements includes (-r, -c) are read from disk, so the worker fetches them first: a missing one comes back
     as an error of kind `include` with its `path` in the repo, and the worker fetches it and asks again. One outside
     the repo has no `path`. Any other error is left to check(), which reports it.
+
+    configs: plan()'s `configs`, the repo's installer settings files, or null when GitHub cut the file list short.
+    The worker fetches the ones configs_for() names first; with any of them missing, or no list, nothing is looked up.
     """
     if _reads_offline(path):
         return json.dumps({"lookups": [], "total": 0})
@@ -277,6 +352,7 @@ def needs(root: str, path: str) -> str:
         return json.dumps({"error": f"{inc} (an include) isn't fetched yet", "kind": "include", "path": inc})
     except (SourceError, ValueError, OSError) as e:  # ValueError: a file that isn't valid TOML or JSON
         return json.dumps({"error": str(e).replace(f"{root}/", ""), "kind": "source"})
+    _keep_private_without_configs(source, root, path, configs_json)
     lookups = {
         _lookup_key(pkg): {"name": canonicalize_name(pkg.name), "version": pkg.version or None}
         for pkg in _lookups(source)
@@ -304,7 +380,9 @@ def _fill_lookups(source: Source, targets: list[Target], lookups: dict) -> None:
             pkg.files = None  # as fill_all(): never judged on the files a pixi.lock happened to record
 
 
-def check(root: str, lockfile: str, options_json: str, lookups_json: str | None = None) -> str:
+def check(
+    root: str, lockfile: str, options_json: str, lookups_json: str | None = None, configs_json: str | None = None
+) -> str:
     """The lockfile's packages with a gap on any target, read offline from the files it lists.
 
     options: {"pythons": [...], "platforms": [...], "glibc"?, "musl"?, "macos"?}. A target Python the lock's
@@ -316,6 +394,10 @@ def check(root: str, lockfile: str, options_json: str, lookups_json: str | None 
     `name` (a range) or `name==version` (a pin). A package with no answer is reported as unknown. PyPI has each
     release's files for every Python, so nothing is `outside_lock` there: like the CLI, a pyproject.toml is checked
     on the targets asked for, whatever its requires-python.
+
+    configs: as for needs(). The result's `configs` are the installer settings files beside the file or above it that
+    were read; `configs_unread` the ones the repo has there that couldn't be fetched, and `configs_unknown` says the
+    repo's list of them wasn't known: either keeps every package of the file off pypi.org.
 
     The result's `private` names the packages left off pypi.org as a private index's (they're in `skipped` too),
     and `looked_up` says whether the files came from PyPI rather than from the lockfile. `listed` counts the packages
@@ -337,6 +419,8 @@ def check(root: str, lockfile: str, options_json: str, lookups_json: str | None 
     except (SourceError, ValueError, OSError) as e:  # ValueError: a lockfile that isn't valid TOML or JSON
         return json.dumps({"error": str(e).replace(f"{root}/", ""), "kind": "source"})
     looked_up = not _reads_offline(lockfile)
+    unread = _keep_private_without_configs(source, root, lockfile, configs_json) or {"unknown": False, "unread": []}
+    read_configs = [c for c in json.loads(configs_for(lockfile, configs_json)) if (Path(root) / c).is_file()]
     if looked_up:
         _fill_lookups(source, targets, json.loads(lookups_json) if lookups_json else {})
         # As api._check_lockfile() builds them, which can't be asked: it refuses a pyproject.toml and does its own
@@ -407,6 +491,9 @@ def check(root: str, lockfile: str, options_json: str, lookups_json: str | None 
             "skipped": sorted({p.name for p in source.packages if p.skip}),
             "private": sorted({p.name for p in source.packages if p.skip == "private index"}),
             "private_count": sum(p.skip == "private index" for p in source.packages),
+            "configs": read_configs,
+            "configs_unread": unread["unread"],
+            "configs_unknown": unread["unknown"],
             "looked_up": looked_up,
             "per_target": per_target,
             "rows": rows,

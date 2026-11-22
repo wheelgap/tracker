@@ -156,10 +156,16 @@ def run_cli(lock: Path, *flags: str, env: dict[str, str] | None = None) -> dict:
     return json.loads(done.stdout)
 
 
+def configs(root: Path) -> str:
+    """plan()'s `configs` for a repo whose files are root's, as the worker hands it to needs() and check()."""
+    paths = [p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()]
+    return json.dumps(json.loads(driver.plan(json.dumps(paths)))["configs"])
+
+
 def run_driver(lock: Path, lookups: dict | None = None) -> dict:
     options = json.dumps({"pythons": PYTHONS, "platforms": PLATFORMS})
-    args = () if lookups is None else (json.dumps(lookups),)
-    result = json.loads(driver.check(str(lock.parent), lock.name, options, *args))
+    lookups_json = None if lookups is None else json.dumps(lookups)
+    result = json.loads(driver.check(str(lock.parent), lock.name, options, lookups_json, configs(lock.parent)))
     assert "error" not in result, result
     return result
 
@@ -279,7 +285,7 @@ def fetch_lookups(lock: Path, trim: bool = True) -> dict:
     and trimmed by the worker's own trimProject as the worker trims them. So every looked-up case here compares the
     CLI (which reads PyPI's whole JSON) with the driver on trimmed JSON: when a new wheelgap pin reads a field the
     trimmers drop, a case whose canned JSON has that field fails. `trim=False` gives the untrimmed answers."""
-    needed = json.loads(driver.needs(str(lock.parent), lock.name))
+    needed = json.loads(driver.needs(str(lock.parent), lock.name, configs(lock.parent)))
     assert "error" not in needed, needed
     docs = {
         (f"{l['name']}=={l['version']}" if l["version"] else l["name"]): answer(l["name"], l["version"])

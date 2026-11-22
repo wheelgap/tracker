@@ -188,10 +188,14 @@ export function withoutUnreadable(lockfiles, failed, auto) {
 
 // An all-private pyproject has no browser answer. Use the driver's entry count, not private.length: its display
 // names are deduplicated, while listed counts repeated requirements (for example, with different markers).
+// When that's because installer settings beside it or above it couldn't all be read (configs_unread, configs_unknown:
+// see privateText), the reason says so instead.
 export function privatePyprojectReason(result) {
-  return !result.error && result.looked_up && result.lockfile?.split("/").pop() === "pyproject.toml"
-    && result.packages === 0 && result.listed > 0 && result.private_count === result.listed
-    ? "its index or source settings don't identify which packages are from PyPI" : null;
+  if (!(!result.error && result.looked_up && result.lockfile?.split("/").pop() === "pyproject.toml"
+    && result.packages === 0 && result.listed > 0 && result.private_count === result.listed)) return null;
+  if (result.configs_unknown) return "GitHub listed only part of the repo's files, so installer settings that apply to it may be missing";
+  if (result.configs_unread?.length) return `installer settings that apply to it couldn't be fetched (${result.configs_unread.join(", ")})`;
+  return "its index or source settings don't identify which packages are from PyPI";
 }
 
 // Why a file's result is no answer, so that withoutUnreadable() may move on from it, or null when the result stands:
@@ -225,6 +229,28 @@ export function missedText(missed, lockfile) {
   if (!why.length) return null;
   const local = missed.over_cap || missed.failed ? ` uvx wheelgap ${lockfile} in a checkout looks them up.` : "";
   return `Not looked up on PyPI, so shown as unknown: ${why.join("; ")}.${local}`;
+}
+
+// Why a looked-up file's packages were kept off pypi.org (driver.check's `private`), or null when none were. The
+// driver keeps them off when the file, or a uv.toml, pyproject.toml or pdm.toml beside it or above it (`configs`),
+// names another index, and when one of those settings files the repo has couldn't be fetched (`configs_unread`) or
+// GitHub cut the file list short, so one may be missing from it (`configs_unknown`).
+export function privateText(r) {
+  const names = r.private || [];
+  if (!names.length) return null;
+  const list = (items, most = 8) => `${items.slice(0, most).join(", ")}${items.length > most ? `, and ${items.length - most} more` : ""}`;
+  const after = `so these may not be PyPI's packages and their names aren't sent to pypi.org: ${list(names)}.`;
+  const unread = r.configs_unread || [];
+  if (r.configs_unknown || unread.length) {
+    const why = r.configs_unknown
+      ? `GitHub listed only part of this repo's files, so a uv.toml, pyproject.toml or pdm.toml beside ${r.lockfile} or in a folder above it may be missing from the list`
+      : `${list(unread, 3)} (beside ${r.lockfile} or in a folder above it) couldn't be fetched`;
+    const retry = r.configs_unknown ? `uvx wheelgap ${r.lockfile} in a checkout reads them all.` : "Check again to retry.";
+    return `Not checked: ${why}. Such a file can point installers at an index other than PyPI (a [tool.uv] index, say), ${after} ${retry}`;
+  }
+  const near = (r.configs || []).filter((c) => c !== r.lockfile);
+  const where = near.length ? `${r.lockfile} or its installer settings (${list(near, 3)})` : r.lockfile;
+  return `Not checked: ${where} names an index or source other than PyPI (an --index-url or --extra-index-url line, a [tool.uv] index or sources setting, a Pipfile source), ${after} To check them on that index, run uvx wheelgap --index-url with its URL in a checkout.`;
 }
 
 // Page state <-> URL query, so a result can be shared. Unknown platforms and Pythons are dropped.
