@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import re
+import tomllib
 from pathlib import Path, PurePosixPath
 
 import wheelgap
@@ -190,10 +191,41 @@ def plan(paths_json: str) -> str:
             "more_dockerfiles": max(0, len(dockerfiles) - MAX_DOCKERFILES),
             "templates": sorted(templates),
             "python_version": ".python-version" if ".python-version" in paths else None,
+            # How many more files plan() found than it lists: with any left out, the page never takes the one input
+            # it sees in a subfolder for the only one (autoPick() in check-logic.mjs).
+            "more_lockfiles": max(0, len(lockfiles) - MAX_LOCKFILES),
+            # A root setup.py or setup.cfg makes the root a project of its own, whose dependencies wheelgap can't read,
+            # so `wheelgap DIR` doesn't take the one input in a subfolder for the project's (sources._unread_project).
+            "root_project_files": [name for name in ("setup.py", "setup.cfg") if name in paths],
             # Every installer settings file in the repo, wherever it is: configs_for() picks the ones a check reads.
             # In any case: on a case-insensitive disk (macOS, Windows) wheelgap reads a Pyproject.toml too.
             "configs": sorted(p for p in paths if PurePosixPath(p).name.lower() in CONFIG_NAMES),
         }
+    )
+
+
+def _pyproject_is_project(path: Path) -> bool:
+    """Whether a pyproject.toml wheelgap couldn't read still describes a project of its own, as wheelgap's
+    sources._unread_project() decides on main (after 0.13.0; mirrored, since the page pins 0.13.0): a [project] or
+    [build-system] table, [tool.flit.metadata], PDM-legacy [tool.pdm] dependencies, Poetry dependencies other than
+    python, or a file that isn't valid TOML. A root that is one isn't taken for a subfolder input's project
+    (autoPick() in check-logic.mjs). A setup.py or setup.cfg beside it isn't fetched: the page has plan()'s
+    `root_project_files` for those."""
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except OSError:
+        return False
+    except ValueError:  # not TOML, or not UTF-8 (UnicodeDecodeError)
+        return True
+    tool = data.get("tool") if isinstance(data.get("tool"), dict) else {}
+    flit, pdm, poetry = (tool.get(name) for name in ("flit", "pdm", "poetry"))
+    poetry_deps = poetry.get("dependencies") if isinstance(poetry, dict) else None
+    return (
+        "project" in data
+        or "build-system" in data
+        or (isinstance(flit, dict) and "metadata" in flit)
+        or (isinstance(pdm, dict) and "dependencies" in pdm)
+        or (isinstance(poetry_deps, dict) and any(str(dep).lower() != "python" for dep in poetry_deps))
     )
 
 
@@ -510,7 +542,10 @@ def check(
     try:
         source = load_file(path)
     except (SourceError, ValueError, OSError) as e:  # ValueError: a lockfile that isn't valid TOML or JSON
-        return json.dumps({"error": str(e).replace(f"{root}/", ""), "kind": "source"})
+        error = {"error": str(e).replace(f"{root}/", ""), "kind": "source"}
+        if path.name == "pyproject.toml":
+            error["project"] = _pyproject_is_project(path)
+        return json.dumps(error)
     looked_up = not _reads_offline(lockfile)
     unread = _keep_private_without_configs(source, root, lockfile, configs_json) or {"unknown": False, "unread": []}
     read_configs = [c for c in json.loads(configs_for(lockfile, configs_json)) if (Path(root) / c).is_file()]

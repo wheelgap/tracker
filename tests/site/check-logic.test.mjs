@@ -223,7 +223,9 @@ test("autoPick keeps the exactly-named files' pick, checks a lone other requirem
   const named = [{ path: "pyproject.toml", offline: false }, { path: "backend/uv.lock", offline: true }];
   // Exactly-named files decide as pickLockfile() does, wherever the others are (they come last in plan() anyway).
   assert.equal(autoPick([...named, other("requirements-dev.txt")], null).lock.path, "pyproject.toml");
-  assert.equal(autoPick([named[1], other("requirements-dev.txt")], null).lock.path, "backend/uv.lock");
+  // A subfolder's file beside a root requirements-dev.txt: `wheelgap DIR` counts that one as a rival (load_directory's
+  // `rivals`), so it asks between them, and so does the page since #238. Before, the page checked backend/uv.lock.
+  assert.deepEqual(autoPick([named[1], other("requirements-dev.txt")], null), { lock: null, choose: [named[1], other("requirements-dev.txt")], why: "rivals" });
   assert.equal(autoPick([...named, other("backend/requirements-prod.txt")], "backend").lock.path, "backend/uv.lock");
   assert.equal(autoPick([other("requirements/base.txt")], null).lock.path, "requirements/base.txt");
   // Several: none, whatever their names or the folder a URL named.
@@ -231,6 +233,86 @@ test("autoPick keeps the exactly-named files' pick, checks a lone other requirem
   assert.deepEqual(autoPick(several, null), { lock: null, choose: several });
   assert.deepEqual(autoPick(several, "requirements"), { lock: null, choose: several });
   assert.deepEqual(autoPick([], null), { lock: null, choose: null });
+});
+
+// #238: with no input at the root, the rules of `wheelgap DIR` (load_directory() and _nested_inputs() in wheelgap's
+// sources.py on main): one input per subfolder, up to 3 folders down, checked only when it's the only one, isn't
+// named for development, tests, docs or examples, and the root isn't a project of its own.
+const at = (path) => ({ path, offline: /(uv|poetry|pdm)\.lock$|pylock\.toml$/.test(path) });
+const req = (path) => ({ path, offline: false, other: true });
+
+test("autoPick checks the only input in a subfolder, and says so (MiroFish: backend/uv.lock)", () => {
+  assert.deepEqual(autoPick([at("backend/uv.lock")], null), { lock: at("backend/uv.lock"), choose: null, why: "subfolder" });
+  // One per folder, its first in plan()'s order: a pyproject.toml beside a lockfile isn't a second input.
+  const backend = [at("backend/uv.lock"), at("backend/requirements.txt"), at("backend/pyproject.toml")];
+  assert.equal(autoPick(backend, null).lock.path, "backend/uv.lock");
+  assert.equal(autoPick([at("a/b/c/uv.lock")], null).lock.path, "a/b/c/uv.lock"); // 3 folders down
+  // A root pyproject.toml of tool settings only (not a project) the page moved on from doesn't stop it.
+  assert.equal(autoPick([at("backend/uv.lock")], null, { pyprojects: { "pyproject.toml": "settings" } }).lock.path, "backend/uv.lock");
+  // Nor does a setup.py elsewhere, or a link's folder with nothing in it.
+  assert.equal(autoPick([at("backend/uv.lock")], null, { rootProjectFiles: [] }).lock.path, "backend/uv.lock");
+  assert.equal(autoPick([at("backend/uv.lock")], "docs").lock.path, "backend/uv.lock");
+  assert.deepEqual(pickRequestedFile([at("backend/uv.lock")], null, false, null), {
+    lock: at("backend/uv.lock"), lockfiles: [at("backend/uv.lock")], auto: true, notice: null, choose: null, why: "subfolder",
+  });
+});
+
+test("autoPick asks when the root is a project, the subfolder inputs are several or side files, or more could be missing", () => {
+  // transformers: a root pyproject.toml with no dependencies the page could read, beside setup.py, and
+  // benchmark_v2/requirements.txt, a benchmarks file by its folder's name.
+  const transformers = [at("benchmark_v2/requirements.txt")];
+  for (const ctx of [{}, { rootProjectFiles: ["setup.py"], pyprojects: { "pyproject.toml": "settings" } }, { pyprojects: { "pyproject.toml": "empty" } }]) {
+    assert.deepEqual(autoPick(transformers, null, ctx), { lock: null, choose: transformers, why: "side" });
+  }
+  // langchain: many libs/*/uv.lock, nothing at the root.
+  const langchain = ["core", "langchain", "text-splitters", "partners/openai", "partners/anthropic"].map((d) => at(`libs/${d}/uv.lock`));
+  assert.deepEqual(autoPick(langchain, null), { lock: null, choose: langchain, why: "subfolders" });
+  // cpython: Doc/pylock.toml, a docs file.
+  assert.deepEqual(autoPick([at("Doc/pylock.toml")], null), { lock: null, choose: [at("Doc/pylock.toml")], why: "side" });
+  // A root setup.py (or setup.cfg) and one tools/requirements.txt: the root is the project, so it's asked about.
+  for (const name of ["setup.py", "setup.cfg"]) {
+    assert.deepEqual(autoPick([at("tools/requirements.txt")], null, { rootProjectFiles: [name] }), {
+      lock: null, choose: [at("tools/requirements.txt")], why: "project", project: `Its own dependencies are in ${name}, which wheelgap can't read`,
+    });
+  }
+  // A root pyproject.toml the page tried and moved on from, when it's a project: [project] with nothing in it, one
+  // wheelgap refused (dynamic dependencies, a [build-system]), or one whose packages aren't looked up on PyPI.
+  const why = (state) => autoPick([at("backend/uv.lock")], null, { pyprojects: { "pyproject.toml": state } }).project;
+  assert.equal(why("empty"), "Its pyproject.toml lists no dependencies");
+  assert.equal(why("unread"), "Its own dependencies are in pyproject.toml, which wheelgap can't read");
+  assert.equal(why("private"), "Its own dependencies are in pyproject.toml, which this page can't look up");
+  // A subfolder's pyproject.toml the page tried is no word on the root.
+  assert.equal(autoPick([at("backend/uv.lock")], null, { pyprojects: { "app/pyproject.toml": "unread" } }).why, "subfolder");
+  // GitHub listed part of the tree, or plan() left files out: the one seen may not be the only one.
+  assert.deepEqual(autoPick([at("backend/uv.lock")], null, { partial: true }), { lock: null, choose: [at("backend/uv.lock")], why: "subfolders" });
+  // A side folder anywhere on the way down, in any case.
+  for (const path of ["tests/uv.lock", "e2e_tests/app/uv.lock", "Examples/agent/uv.lock", "docs/source/requirements.txt", "services/api/benchmarks/uv.lock"]) {
+    assert.equal(autoPick([at(path)], null).why, "side", path);
+  }
+  // A side input doesn't count against the one that isn't, and it's offered with it only when there's no other.
+  assert.deepEqual(autoPick([at("backend/uv.lock"), at("docs/requirements.txt")], null).lock.path, "backend/uv.lock");
+  // A requirements file under another name beside a subfolder's requirements.txt could be the project's too.
+  const docker = [at("docker/main/requirements.txt"), req("docker/main/requirements-wheels.txt"), req("docker/main/requirements-dev.txt")];
+  assert.deepEqual(autoPick(docker, null), { lock: null, choose: docker.slice(0, 2), why: "rivals" });
+  assert.equal(autoPick([at("docker/main/uv.lock"), req("docker/main/requirements-wheels.txt")], null).lock.path, "docker/main/uv.lock");
+});
+
+test("autoPick keeps root files first, and offers deeper files without picking one", () => {
+  // A file at the root, or in the folder a link names, is picked as before, whatever is in the subfolders.
+  const repo = [at("uv.lock"), at("Doc/pylock.toml"), at("libs/core/uv.lock"), at("libs/langchain/uv.lock")];
+  assert.deepEqual(autoPick(repo, null), { lock: at("uv.lock"), choose: null });
+  assert.deepEqual(autoPick(repo, "libs/core"), { lock: at("libs/core/uv.lock"), choose: null });
+  assert.deepEqual(autoPick([at("pyproject.toml"), at("backend/uv.lock")], null, { rootProjectFiles: ["setup.py"] }), { lock: at("pyproject.toml"), choose: null });
+  // A lone requirements file under another name at the root comes before the subfolders, as it does in `wheelgap DIR`.
+  assert.deepEqual(autoPick([at("backend/uv.lock"), req("requirements/base.txt")], null), { lock: req("requirements/base.txt"), choose: null });
+  // Nothing up to 3 folders down: no pick, the files there are to choose from.
+  const deep = [at("a/b/c/d/uv.lock"), req("tools/requirements-prod.txt")];
+  assert.deepEqual(autoPick(deep, null), { lock: null, choose: deep, why: "elsewhere" });
+  // transformers today: after its root pyproject.toml, only utils/checkers-requirements.txt, which `wheelgap DIR`
+  // doesn't read by itself (it's under another name, in a subfolder). Before #238 the page checked it.
+  assert.deepEqual(autoPick([req("utils/checkers-requirements.txt")], null, { rootProjectFiles: ["setup.py"] }), {
+    lock: null, choose: [req("utils/checkers-requirements.txt")], why: "elsewhere",
+  });
 });
 
 test("a lone requirements file named for development, tests, docs or examples is offered, never checked on its own", () => {

@@ -92,7 +92,8 @@ export function trimProject(doc) {
 // The file to start from: the first one in `dir` (the folder the URL named), else plan()'s first. plan() lists them
 // shallowest folder first and, in a folder, in the order `wheelgap` looks for them there, with a pyproject.toml
 // last. Every listed file can be checked, so a lockfile deeper in the repo never outranks a requirements.txt in the
-// root, or in the folder the URL named.
+// root, or in the folder the URL named. autoPick() goes no further than that folder and the root: with nothing in
+// either, it follows `wheelgap DIR`'s rules for the subfolders instead of taking plan()'s first file.
 export function pickLockfile(lockfiles, dir) {
   const inDir = (l) => dir !== null && l.path === `${dir}/${l.path.split("/").pop()}`;
   return lockfiles.find(inDir) ?? lockfiles[0] ?? null;
@@ -113,17 +114,88 @@ export function isSideFile(path) {
   return [...parts, stem].some((part) => part.toLowerCase().split(/[^a-z0-9]+/).some((word) => SIDE_WORDS.has(word)));
 }
 
-// The file the page checks by itself: pickLockfile()'s pick among the exactly-named files, as before; with none of
-// those, the only requirements file under another name (`other`, from plan()), unless its name says it's for
-// development, tests, docs or examples (isSideFile), which `wheelgap DIR` never checks on its own. With several of
-// those, or that one side file, it picks none and returns them in `choose`: which one holds the project's
-// dependencies can't be told from a name, so, like `wheelgap DIR`, the page lists them and the visitor picks.
+// How far below the root `wheelgap DIR` looks for an input when the root has none (wheelgap's NESTED_DEPTH, on main
+// after 0.13.0): backend/uv.lock is 1 folder down.
+export const NESTED_DEPTH = 3;
+
+const folderOf = (path) => (path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "");
+
+// Why the root is a project of its own, in `wheelgap DIR`'s words, so that the one input in its subfolders isn't taken
+// for the project's (wheelgap's load_directory() and _unread_project() on main): a root pyproject.toml whose [project]
+// lists nothing, a root setup.py or setup.cfg (`ctx.rootProjectFiles`, from plan()), or a root pyproject.toml that
+// describes a project the page couldn't check. `ctx.pyprojects` says what became of each pyproject.toml the page
+// tried and moved on from (onResult): "empty", "unread" (wheelgap refused it, and it's a project or may be one),
+// "private" or "settings" (tool settings only: no project). null when the root isn't known to be a project.
+function rootProject(ctx) {
+  const root = ctx.pyprojects?.["pyproject.toml"];
+  if (root === "empty") return "Its pyproject.toml lists no dependencies";
+  for (const name of ["setup.py", "setup.cfg"]) {
+    if ((ctx.rootProjectFiles || []).includes(name)) return `Its own dependencies are in ${name}, which wheelgap can't read`;
+  }
+  if (root === "unread") return "Its own dependencies are in pyproject.toml, which wheelgap can't read";
+  if (root === "private") return "Its own dependencies are in pyproject.toml, which this page can't look up";
+  return null;
+}
+
+// The file the page checks by itself, with the rules of `wheelgap DIR` (load_directory() and _nested_inputs() in
+// wheelgap's src/wheelgap/sources.py on main, after 0.13.0; the page pins 0.13.0, so they're mirrored here):
+// 1. An exactly-named file in the folder a link names, else in the root: pickLockfile()'s pick, as before.
+// 2. Requirements files under other names in the root (`other`, from plan(); in the root or its requirements/
+//    folder): the only one, unless its name says it's for development, tests, docs or examples (isSideFile), which
+//    `wheelgap DIR` never checks on its own. With several, none: which one holds the project's dependencies can't be
+//    told from a name.
+// 3. Otherwise one input per subfolder up to NESTED_DEPTH folders down (the folders plan() skips are left out), as
+//    `wheelgap FOLDER` reads it: its first exactly-named file in plan()'s order, a pyproject.toml last. A
+//    pyproject.toml counts whether or not it lists dependencies, which the page can't tell before fetching it: that
+//    can only make the page ask where `wheelgap DIR` wouldn't, never pick where it would ask. The only one is
+//    checked (`why: "subfolder"`) when its folders' names aren't side words, the whole file list is known
+//    (`ctx.partial` false), the root isn't a project of its own (rootProject), and no other requirements file could as
+//    well be the project's (a lone side one in the root, or one under another name beside it).
+// Every other case picks none and returns the files to ask between in `choose`, with `why` saying in which way, so
+// the page says so in `wheelgap DIR`'s words (chooseFile): "subfolders", "project" (with `project`, the reason),
+// "rivals", "side" and "elsewhere" (no input `wheelgap DIR` reads up to NESTED_DEPTH folders down: only deeper files,
+// or requirements files under other names in a subfolder, such as utils/checkers-requirements.txt). Without `why`,
+// they're #229's requirements files under other names in the root, or its one side file.
 // {lock: null, choose: null} when there's nothing at all.
-export function autoPick(lockfiles, dir) {
+export function autoPick(lockfiles, dir, ctx = {}) {
   const named = lockfiles.filter((l) => !l.other);
-  if (named.length) return { lock: pickLockfile(named, dir), choose: null };
-  if (lockfiles.length === 1 && !isSideFile(lockfiles[0].path)) return { lock: lockfiles[0], choose: null };
-  return { lock: null, choose: lockfiles.length ? lockfiles : null };
+  for (const base of dir ? [dir, ""] : [""]) {
+    const here = named.find((l) => folderOf(l.path) === base);
+    if (here) return { lock: here, choose: null };
+  }
+  const others = lockfiles.filter((l) => l.other);
+  const rootOthers = others.filter((l) => ["", "requirements"].includes(folderOf(l.path)));
+  if (rootOthers.length > 1) return { lock: null, choose: rootOthers };
+  if (rootOthers.length === 1 && !isSideFile(rootOthers[0].path)) return { lock: rootOthers[0], choose: null };
+
+  const main = [];
+  const side = [];
+  const folders = new Set();
+  for (const l of named) {
+    const folder = folderOf(l.path);
+    if (folders.has(folder) || folder.split("/").length > NESTED_DEPTH) continue;
+    folders.add(folder);
+    (isSideFile(l.path) ? side : main).push(l);
+  }
+  if (main.length === 1 && !ctx.partial) {
+    const [only] = main;
+    const project = rootProject(ctx);
+    if (project) return { lock: null, choose: main, why: "project", project };
+    const folder = folderOf(only.path);
+    const beside = fileKind(only.path) === "requirements"
+      ? others.filter((l) => [folder, `${folder}/requirements`].includes(folderOf(l.path)) && !isSideFile(l.path.split("/").pop()))
+      : [];
+    const rivals = [...rootOthers, ...beside];
+    if (rivals.length) return { lock: null, choose: [only, ...rivals], why: "rivals" };
+    return { lock: only, choose: null, why: "subfolder" };
+  }
+  if (main.length) return { lock: null, choose: main, why: "subfolders" };
+  if (side.length) return { lock: null, choose: [...rootOthers, ...side], why: "side" };
+  if (rootOthers.length) return { lock: null, choose: rootOthers }; // #229's lone side file in the root
+  if (!lockfiles.length) return { lock: null, choose: null };
+  // #229's lone side file anywhere else (examples/requirements-prod.txt), said as before.
+  if (lockfiles.length === 1 && lockfiles[0].other && isSideFile(lockfiles[0].path)) return { lock: null, choose: lockfiles };
+  return { lock: null, choose: lockfiles, why: "elsewhere" };
 }
 
 // wheelgap 0.13.0's sources.file_kind, which picks a file's reader by its name: the reader, or null for a name it
@@ -151,16 +223,19 @@ export function isReadableFile(path) {
   return fileKind(path) !== null;
 }
 
+// autoPick()'s `why` and `project`, only when it has them, so #229's answers keep their shape.
+const pickReason = (pick) => Object.fromEntries(["why", "project"].filter((k) => pick[k]).map((k) => [k, pick[k]]));
+
 // Pick the file to check when a link or query may have named one explicitly.
 // Returns { lock, lockfiles, auto, notice, choose }. `lockfiles` has the named file added at the end, marked `added` (so the
 // repo's own automatic pick stays first, and the badge never treats it as the default) when it exists in the repo tree and is readable. `notice` says why a named file
 // wasn't checked; the page adds which file it checked instead, since that can still change (withoutUnreadable).
 // With no file named, or one that can't be checked, the page's own pick is autoPick()'s, so `choose` lists the files
 // to ask between when it picks none (lock null); a named file that is checked has choose null.
-export function pickRequestedFile(lockfiles, requested, inTree, dir) {
+export function pickRequestedFile(lockfiles, requested, inTree, dir, ctx = {}) {
   if (!requested) {
-    const pick = autoPick(lockfiles, dir);
-    return { lock: pick.lock, lockfiles, auto: true, notice: null, choose: pick.choose };
+    const pick = autoPick(lockfiles, dir, ctx);
+    return { lock: pick.lock, lockfiles, auto: true, notice: null, choose: pick.choose, ...pickReason(pick) };
   }
   const existing = lockfiles.find((l) => l.path === requested);
   if (existing) {
@@ -173,8 +248,8 @@ export function pickRequestedFile(lockfiles, requested, inTree, dir) {
   const notice = !isReadableFile(requested)
     ? `${requested} isn't a file this page reads.`
     : `${requested} wasn't found in this repository.`;
-  const pick = autoPick(lockfiles, dir);
-  return { lock: pick.lock, lockfiles, auto: true, notice, choose: pick.choose };
+  const pick = autoPick(lockfiles, dir, ctx);
+  return { lock: pick.lock, lockfiles, auto: true, notice, choose: pick.choose, ...pickReason(pick) };
 }
 
 // After wheelgap couldn't read `failed`: the repo's other files to pick from instead, or null to report the error.

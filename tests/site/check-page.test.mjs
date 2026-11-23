@@ -379,7 +379,8 @@ test("the badge is a small static image on the page's own origin, offered as Mar
   // Filled in as text, from the pure helper, and copied the way the other buttons copy.
   // The default is what a visit with the repo alone checks by itself: autoPick() over the repo's own files, never
   // one a blob link or ?lock= added (`added`), so the link keeps lock= for that file; none when it would ask which.
-  assert.match(page, /\$\("badge-md"\)\.textContent = badgeMarkdown\(state\.repo, r\.lockfile, autoPick\(state\.plan\.lockfiles\.filter\(\(l\) => !l\.added\), null\)\.lock\?\.path \?\? null\);/);
+  // With what the page knows of the root (autoPick()'s ctx, #238), so a repo it would ask about gets no default.
+  assert.match(page, /\$\("badge-md"\)\.textContent = badgeMarkdown\(state\.repo, r\.lockfile, autoPick\(state\.plan\.lockfiles\.filter\(\(l\) => !l\.added\), null, state\.pickContext \?\? \{\}\)\.lock\?\.path \?\? null\);/);
   const repoFiles = [{ path: "pyproject.toml", offline: false }];
   const added = { path: "requirements/default.txt", offline: false, added: true };
   const defaultOf = (lockfiles) => checkLogic.autoPick(lockfiles.filter((l) => !l.added), null).lock?.path ?? null;
@@ -693,7 +694,7 @@ test("the package fallback goes under the error when the lone root pyproject.tom
   const source = read("check.mjs");
   const fn = source.match(/^function onResult\(.*?^}$/ms);
   assert.ok(fn, "onResult is in check.mjs");
-  const run = ({ lockfile = "pyproject.toml", projectName = "httpie", kind = "source", lockfiles = [{ path: lockfile, offline: false }] } = {}) => {
+  const run = ({ lockfile = "pyproject.toml", projectName = "httpie", kind = "source", lockfiles = [{ path: lockfile, offline: false }], project } = {}) => {
     const calls = [];
     const made = new Map();
     const $ = (id) => (made.has(id) ? made.get(id) : made.set(id, { hidden: false, textContent: "" }).get(id));
@@ -706,15 +707,21 @@ test("the package fallback goes under the error when the lone root pyproject.tom
       checkLogic.withoutUnreadable, checkLogic.privatePyprojectReason, checkLogic.autoPick, (files) => calls.push(["choose", files]),
       () => calls.push(["runCheck"]), (name) => calls.push(["fallback", name]),
     );
-    onResult({ kind, error: "pyproject.toml: [project] dependencies is dynamic (set by the build backend), so wheelgap can't read it" });
+    onResult({ kind, error: "pyproject.toml: [project] dependencies is dynamic (set by the build backend), so wheelgap can't read it", project });
     return calls;
   };
   const calls = run();
   assert.match(calls[0][1], /^Wheelgap couldn't read pyproject\.toml: /); // capitalised with no named-file notice before it
   assert.deepEqual(calls[1], ["fallback", "httpie"]);
   assert.deepEqual(run({ projectName: null }).map(([c]) => c), ["status"]);
-  // A pyproject.toml with another file to move on to is replaced by it, not answered with the package.
-  assert.deepEqual(run({ lockfiles: [{ path: "pyproject.toml" }, { path: "docs/requirements.txt" }] }), [["runCheck"]]);
+  // A pyproject.toml with another file to move on to is replaced by it, not answered with the package: by the only
+  // input in a subfolder when the root is no project of its own (the driver's `project`), and otherwise by the
+  // question which file to check (#238), as `wheelgap DIR` asks.
+  assert.deepEqual(run({ lockfiles: [{ path: "pyproject.toml" }, { path: "backend/requirements.txt" }], project: false }), [["runCheck"]]);
+  const asked = run({ lockfiles: [{ path: "pyproject.toml" }, { path: "backend/requirements.txt" }] });
+  assert.deepEqual(asked.map(([c]) => c), ["choose"]);
+  assert.deepEqual(asked[0][1].map((l) => l.path), ["backend/requirements.txt"]);
+  assert.deepEqual(run({ lockfiles: [{ path: "pyproject.toml" }, { path: "docs/requirements.txt" }], project: false }).map(([c]) => c), ["choose"]);
   assert.deepEqual(run({ lockfile: "requirements.txt" }).map(([c]) => c), ["status"]);
 });
 
@@ -811,9 +818,11 @@ test("with several requirements files under other names and nothing else, the pa
   assert.deepEqual(alerts[1].kids[1], { tag: "code", attrs: { text: "uvx wheelgap --deps httpie -p 3.14 -t linux-x86_64" }, kids: [] });
   chooseWith({ repo: { owner: "o", name: "r" }, fileNotice: null, projectName: null, pythons: ["3.14"], platforms: ["linux-x86_64"] })(files);
   assert.deepEqual(box("alerts").children, []);
+  // Requirements files under other names in the root come before the subfolders, as in `wheelgap DIR`: several of
+  // them are asked about, never passed over for a subfolder's lockfile (#238).
   const nested = pickPage([...celery.slice(1), { path: "backend/uv.lock", offline: true }]);
   nested.loaded();
-  assert.deepEqual(nested.calls, [["runCheck", "backend/uv.lock"]]);
+  assert.deepEqual(nested.calls, [["choose", ["requirements/default.txt", "requirements/docs.txt"]]]);
   assert.match(read("check.mjs"), /state\.lockfile \? \[\] : \[el\("option", \{ value: "", disabled: true, selected: true, text: "Choose a file…" \}\)\]/);
   // While nothing is picked, a platform or Python chip only redraws the setup: there's no file to check yet.
   const run = read("check.mjs").match(/^function runCheck\(\) \{.*?^}$/ms)[0];
@@ -827,7 +836,7 @@ test("with several requirements files under other names and nothing else, the pa
 
 // Exercise the page's actual selection and render pipeline, with the worker and DOM stood in. The driver contract
 // is pinned by test_check_driver.py; these tests check what the visitor sees after that result reaches the page.
-function resultPage(locks, query = null) {
+function resultPage(locks, query = null, { dir = null, rootProjectFiles = [] } = {}) {
   const source = read("check.mjs");
   const fn = (name) => source.match(new RegExp(`^function ${name}\\(.*?^}$`, "ms"))[0];
   const elements = new Map();
@@ -854,7 +863,7 @@ function resultPage(locks, query = null) {
     if (!elements.has(id)) elements.set(id, new Element());
     return elements.get(id);
   };
-  const state = { repo: { owner: "example", name: "project", dir: null }, query,
+  const state = { repo: { owner: "example", name: "project", dir }, query,
     python: null, platform: null, pythons: [], platforms: [] };
   const posts = [];
   const env = { ...checkLogic, $, state, document: { createElement: () => new Element() },
@@ -862,9 +871,9 @@ function resultPage(locks, query = null) {
     worker: { postMessage: (m) => posts.push(m) }, history: { replaceState() {} },
     status() {}, loadLab() {}, keepFocus: (fn) => fn(), renderTargets() {}, renderTable() {}, renderNext() {},
   };
-  const functions = ["el", "chip", "onLoaded", "runCheck", "onResult", "render", "renderVerdict", "renderSetup", "hideResultSections"];
+  const functions = ["el", "chip", "onLoaded", "runCheck", "onResult", "render", "renderVerdict", "renderSetup", "hideResultSections", "chooseFile"];
   const page = new Function(...Object.keys(env), `let seq = 0; ${functions.map(fn).join("\n")}; return {onLoaded, onResult};`)(...Object.values(env));
-  page.onLoaded({ plan: { lockfiles: locks, workflows: [] },
+  page.onLoaded({ plan: { lockfiles: locks, workflows: [], root_project_files: rootProjectFiles },
     detected: { found: [], unreadable: [], pythons: ["3.14"], platforms: ["linux-x86_64"] }, ref: "HEAD", root: "/repos/1" });
   return { ...page, $, state, posts };
 }
@@ -876,15 +885,25 @@ const privateResult = {
 };
 const projectLocks = [{ path: "pyproject.toml", offline: false }, { path: "backend/uv.lock", offline: true }];
 
-test("an auto-picked all-private pyproject actually checks the next file and records why", () => {
+test("an auto-picked all-private root pyproject records why, and asks before checking a subfolder's file instead", () => {
+  // The root's pyproject.toml lists the project's dependencies, the page just can't look them up: the only input in a
+  // subfolder isn't taken for the project's (#238), as `wheelgap DIR` wouldn't take it beside a root project.
   const page = resultPage([...projectLocks]);
   page.onResult(privateResult);
+  assert.deepEqual(page.posts.map((m) => m.lockfile), ["pyproject.toml"]);
+  assert.equal(page.state.lockfile, null);
+  assert.equal(page.$("verdict").textContent, "Pick the file to check");
+  assert.match(page.$("verdict-detail").textContent, /^example\/project has no lockfile, requirements\.txt or pyproject\.toml dependencies at its root\. Its own dependencies are in pyproject\.toml, which this page can't look up, so the one input in its subfolders, backend\/uv\.lock, isn't taken for the project's\./);
+  assert.match(page.$("read-list").textContent, /Not read: pyproject.toml.*index or source settings/);
+  assert.equal(page.$("out").hidden, false);
+  // Picked under "Lockfile", it's checked, and the verdict doesn't call it the page's own pick.
+  page.$("lockfile").value = "backend/uv.lock";
+  page.$("lockfile").onchange();
   assert.deepEqual(page.posts.map((m) => m.lockfile), ["pyproject.toml", "backend/uv.lock"]);
   page.onResult({ ...privateResult, lockfile: "backend/uv.lock", looked_up: false, packages: 2,
     private: [], private_count: 0, skipped: [] });
   assert.match(page.$("verdict").textContent, /All 2 packages have a wheel/);
-  assert.match(page.$("read-list").textContent, /Not read: pyproject.toml.*index or source settings/);
-  assert.equal(page.$("out").hidden, false);
+  assert.doesNotMatch(page.$("verdict-detail").textContent, /the only one in a subfolder/);
 });
 
 test("an all-private pyproject never gives way to a looked-up file its settings cover", () => {
@@ -895,12 +914,16 @@ test("an all-private pyproject never gives way to a looked-up file its settings 
   assert.equal(page.posts.length, 1, "no fallback request");
   assert.equal(page.state.lockfile, "pyproject.toml");
   assert.match(page.$("verdict").textContent, /pyproject.toml wasn't checked/);
-  // An offline lockfile anywhere is still a fine next file: it sends no names anywhere.
+  // An offline lockfile anywhere sends no names anywhere, so it's offered; but as the root pyproject.toml is the
+  // project's, it's asked about, not checked by itself (#238).
   const offline = resultPage([{ path: "pyproject.toml", offline: false }, { path: "backend/requirements.txt", offline: false }, { path: "backend/uv.lock", offline: true }]);
   offline.onResult(privateResult);
-  assert.deepEqual(offline.posts.map((m) => m.lockfile), ["pyproject.toml", "backend/uv.lock"]);
+  assert.deepEqual(offline.posts.map((m) => m.lockfile), ["pyproject.toml"]);
+  assert.deepEqual(offline.state.plan.lockfiles.map((l) => l.path), ["backend/uv.lock"]);
+  assert.match(offline.$("verdict-detail").textContent, /the one input in its subfolders, backend\/uv\.lock, isn't taken for the project's/);
   // A nested private pyproject covers only its own folder: a looked-up file beside it stays, one elsewhere is next.
-  const nested = resultPage([{ path: "app/pyproject.toml", offline: false }, { path: "app/requirements.txt", offline: false }, { path: "tools/requirements.txt", offline: false }]);
+  // (Picked by itself through a link to its folder: with nothing at the root, app/ and tools/ would be asked about.)
+  const nested = resultPage([{ path: "app/pyproject.toml", offline: false }, { path: "app/requirements.txt", offline: false }, { path: "tools/requirements.txt", offline: false }], null, { dir: "app" });
   nested.onResult({ ...privateResult, lockfile: "app/pyproject.toml" });
   assert.deepEqual(nested.posts.map((m) => m.lockfile), ["app/pyproject.toml", "tools/requirements.txt"]);
 });
@@ -933,6 +956,73 @@ for (const [label, locks, query] of [
   page.onResult({ ...privateResult, packages: 1, private_count: 0, private: [], skipped: [] });
   assert.doesNotMatch(page.$("alerts").textContent, /or commit a uv.lock/);
   assert.equal(page.$("gaps-title").closest().hidden, false);
+});
+
+// #238: with no input at the root, the page follows `wheelgap DIR` into the subfolders. Shaped like
+// huggingface/transformers: a root pyproject.toml of tool settings beside setup.py, and only benchmark and example
+// requirements files below it.
+const transformersLocks = () => [
+  { path: "pyproject.toml", offline: false },
+  { path: "benchmark_v2/requirements.txt", offline: false },
+  { path: "examples/pytorch/text-classification/requirements.txt", offline: false },
+];
+const noProjectTable = { kind: "source", error: "pyproject.toml: no [project] table, so there are no dependencies to read" };
+
+test("after the root pyproject.toml, a repo shaped like transformers shows the chooser, not a result", () => {
+  for (const project of [false, true, undefined]) { // tool settings only, a [build-system], or a driver that doesn't say
+    const page = resultPage(transformersLocks(), null, { rootProjectFiles: ["setup.py"] });
+    assert.deepEqual(page.posts.map((m) => m.lockfile), ["pyproject.toml"]);
+    page.onResult({ ...noProjectTable, project });
+    assert.deepEqual(page.posts.map((m) => m.lockfile), ["pyproject.toml"], "no check of benchmark_v2/requirements.txt");
+    assert.equal(page.state.lockfile, null);
+    assert.equal(page.state.result, null);
+    assert.equal(page.$("verdict").textContent, "Pick the file to check");
+    assert.equal(page.$("verdict-detail").textContent,
+      "example/project has no lockfile, requirements.txt or pyproject.toml dependencies at its root, and the only inputs it has are, by their names, for development, tests, docs or examples, which wheelgap doesn't check on its own: benchmark_v2/requirements.txt, examples/pytorch/text-classification/requirements.txt. To check one anyway, pick it under \"Lockfile\" below.");
+    assert.match(page.$("read-list").textContent, /Not read: pyproject.toml \(pyproject.toml: no \[project\] table/);
+    assert.equal(page.$("gaps-title").closest().hidden, true);
+    assert.equal(page.$("setup-title").closest().hidden, false); // the picker
+  }
+  // transformers' tree today: the benchmark and example folders are ones plan() skips, so after the root
+  // pyproject.toml only utils/checkers-requirements.txt is left, which `wheelgap DIR` doesn't read by itself.
+  const today = resultPage([{ path: "pyproject.toml", offline: false }, { path: "utils/checkers-requirements.txt", offline: false, other: true }],
+    null, { rootProjectFiles: ["setup.py"] });
+  today.onResult({ ...noProjectTable, project: false });
+  assert.deepEqual(today.posts.map((m) => m.lockfile), ["pyproject.toml"]);
+  assert.equal(today.$("verdict-detail").textContent,
+    "example/project has no input that wheelgap reads by itself at its root or in a folder up to 3 down, only utils/checkers-requirements.txt. To check one anyway, pick it under \"Lockfile\" below.");
+  // Without the setup.py, and with a non-side folder instead, the root still isn't a project unless the driver says so.
+  const locks = [{ path: "pyproject.toml", offline: false }, { path: "app/requirements.txt", offline: false }];
+  const settings = resultPage([...locks]);
+  settings.onResult({ ...noProjectTable, project: false });
+  assert.deepEqual(settings.posts.map((m) => m.lockfile), ["pyproject.toml", "app/requirements.txt"]);
+  const built = resultPage([...locks]);
+  built.onResult({ ...noProjectTable, project: true });
+  assert.deepEqual(built.posts.map((m) => m.lockfile), ["pyproject.toml"]);
+  assert.match(built.$("verdict-detail").textContent, /Its own dependencies are in pyproject\.toml, which wheelgap can't read, so the one input in its subfolders, app\/requirements\.txt, isn't taken for the project's/);
+  const empty = resultPage([...locks]);
+  empty.onResult({ ...privateResult, listed: 0, private_count: 0, private: [], skipped: [] }); // [project] lists nothing
+  assert.deepEqual(empty.posts.map((m) => m.lockfile), ["pyproject.toml"]);
+  assert.match(empty.$("verdict-detail").textContent, /\. Its pyproject\.toml lists no dependencies, so the one input in its subfolders, app\/requirements\.txt, isn't taken for the project's\./);
+});
+
+test("the only input in a subfolder is checked, and the verdict says it came from a subfolder", () => {
+  // Shaped like MiroFish: nothing at the root but backend/uv.lock.
+  const page = resultPage([{ path: "backend/uv.lock", offline: true }]);
+  assert.deepEqual(page.posts.map((m) => m.lockfile), ["backend/uv.lock"]);
+  page.onResult({ ...privateResult, lockfile: "backend/uv.lock", looked_up: false, packages: 2, private: [], private_count: 0, skipped: [] });
+  assert.match(page.$("verdict").textContent, /All 2 packages have a wheel/);
+  assert.match(page.$("verdict-detail").textContent, /\. No input at the root: checked backend\/uv\.lock, the only one in a subfolder\.$/);
+  // Several, as in langchain's libs/: asked straight away, in `wheelgap DIR`'s words.
+  const libs = resultPage(["core", "langchain", "partners/openai"].map((d) => ({ path: `libs/${d}/uv.lock`, offline: true })));
+  assert.equal(libs.posts.length, 0);
+  assert.equal(libs.$("verdict-detail").textContent,
+    "example/project has no lockfile, requirements.txt or pyproject.toml dependencies at its root, but inputs in its subfolders: libs/core/uv.lock, libs/langchain/uv.lock, libs/partners/openai/uv.lock. Which one holds the project's dependencies can't be told, so pick it under \"Lockfile\" below.");
+  // A root file is checked as before, and its verdict says nothing about subfolders.
+  const root = resultPage([{ path: "uv.lock", offline: true }, { path: "backend/uv.lock", offline: true }]);
+  assert.deepEqual(root.posts.map((m) => m.lockfile), ["uv.lock"]);
+  root.onResult({ ...privateResult, lockfile: "uv.lock", looked_up: false, packages: 2, private: [], private_count: 0, skipped: [] });
+  assert.doesNotMatch(root.$("verdict-detail").textContent, /subfolder/);
 });
 
 test("some private and some checked packages remain an answer even with another file available", () => {

@@ -5,6 +5,7 @@ import {
   PLATFORMS, PYTHONS, parseRepo, inputHint, pickRequestedFile, autoPick, toQuery, fromQuery, sortPythons, freeThreaded,
   fixFor, rowsFor, headline, cliCommand, packageCliCommand, fixPrompt, verdictText, shareText, nextSteps, validRef, labVerdict, labFor, canonicalName, gapWheelFor,
   gapWheelFixText, withoutUnreadable, unreadableReason, privatePyprojectReason, tileText, missedText, privateText, badgeMarkdown, fixLinks,
+  NESTED_DEPTH,
 } from "./check-logic.mjs";
 
 const $ = (id) => document.getElementById(id);
@@ -76,6 +77,7 @@ let seq = 0;
 let wheelgapVersion = null;
 const state = {
   repo: null, ref: null, root: null, plan: null, detected: null, projectName: null, lockfile: null, auto: false, fileNotice: null, pythons: [], platforms: [],
+  pickContext: null, subfolderPick: null,
   result: null, fixes: null, gapWheels: null, fixesDone: false, python: null, platform: null, showAll: false, truncated: false, lab: {},
   inputError: false,
 };
@@ -179,11 +181,15 @@ function start(repo, query = null) {
 
 function onLoaded({ plan, detected, truncated, ref, root, fileInTree, projectName = null }) {
   Object.assign(state, { plan, detected, truncated, ref, root, projectName });
+  // What autoPick() needs to follow `wheelgap DIR` into the subfolders when the root has no input: whether the root
+  // is a project of its own, and whether the whole file list is known (GitHub's tree, and plan()'s list, can be cut).
+  state.pickContext = { rootProjectFiles: plan.root_project_files || [], pyprojects: {}, partial: Boolean(truncated || plan.more_lockfiles) };
   const q = state.query;
   const requested = q?.lockfile || state.repo.file || null;
-  const picked = pickRequestedFile(plan.lockfiles, requested, Boolean(fileInTree), state.repo.dir);
+  const picked = pickRequestedFile(plan.lockfiles, requested, Boolean(fileInTree), state.repo.dir, state.pickContext);
   plan.lockfiles = picked.lockfiles;
   state.auto = picked.auto; // the page's own pick, not one a link or the visitor named
+  state.subfolderPick = picked.why === "subfolder" ? picked.lock.path : null; // said in the verdict
   state.fileNotice = picked.notice;
   // Set before the no-lockfile answer too: its `uvx wheelgap --deps` command uses them, never the last repo's.
   state.pythons = sortPythons(q?.pythons?.length ? q.pythons : detected.pythons);
@@ -195,7 +201,7 @@ function onLoaded({ plan, detected, truncated, ref, root, fileInTree, projectNam
     return noLockfile();
   }
   state.query = null;
-  if (!picked.lock) return chooseFile(picked.choose);
+  if (!picked.lock) return chooseFile(picked.choose, picked);
   state.lockfile = picked.lock.path;
   runCheck();
 }
@@ -236,9 +242,16 @@ function onResult(result) {
     // A pyproject.toml the page picked itself, with no dependencies the browser can check (or none at all): the repo's
     // next file is checked instead, and "What was read" says why this one wasn't.
     state.detected.unreadable.push({ path: state.lockfile, line: null, reason });
+    // And what it was, for autoPick(): a root pyproject.toml that is a project of its own keeps the one input in a
+    // subfolder from being taken for the project's. The driver says whether one wheelgap refused describes a project
+    // (`project`); without that answer it's taken for one.
+    const ctx = state.pickContext ?? {};
+    const was = result.kind === "source" ? (result.project === false ? "settings" : "unread") : privatePyprojectReason(result) ? "private" : "empty";
+    state.pickContext = { ...ctx, pyprojects: { ...ctx.pyprojects, [state.lockfile]: was } };
     state.plan.lockfiles = rest;
-    const pick = autoPick(rest, state.repo.dir);
-    if (!pick.lock) return chooseFile(pick.choose);
+    const pick = autoPick(rest, state.repo.dir, state.pickContext);
+    state.subfolderPick = pick.why === "subfolder" ? pick.lock.path : null;
+    if (!pick.lock) return chooseFile(pick.choose, pick);
     state.lockfile = pick.lock.path;
     return runCheck();
   }
@@ -298,9 +311,10 @@ function showPackageFallback(packageName) {
   }
 }
 
-// Several requirements files under other names and nothing else to check: the page doesn't guess which one is the
-// project's (as `wheelgap DIR` doesn't), so it lists them and the picker checks the one chosen.
-function chooseFile(files) {
+// No file the page checks by itself (autoPick()): it doesn't guess which one is the project's (as `wheelgap DIR`
+// doesn't), so it lists them, says why in `wheelgap DIR`'s words (`pick.why`), and the picker checks the one chosen.
+// Without a `why`, they're #229's requirements files under other names.
+function chooseFile(files, pick = {}) {
   state.lockfile = null;
   state.result = null;
   status("");
@@ -308,10 +322,33 @@ function chooseFile(files) {
   $("out").hidden = false;
   const names = files.map((l) => l.path);
   const some = `${names.slice(0, 8).join(", ")}${names.length > 8 ? `, and ${names.length - 8} more` : ""}`;
+  const repoName = `${state.repo.owner}/${state.repo.name}`;
+  const atRoot = `${repoName} has no lockfile, requirements.txt or pyproject.toml dependencies at its root`;
   $("verdict").textContent = "Pick the file to check";
-  $("verdict-detail").textContent = names.length === 1
-    ? `${state.repo.owner}/${state.repo.name} has no lockfile the page reads by itself, only ${names[0]}, which by its name is for development, tests, docs or examples, so it isn't checked on its own. To check it anyway, pick it under "Lockfile" below.`
-    : `${state.repo.owner}/${state.repo.name} has no lockfile the page reads by itself, but ${names.length} requirements files: ${some}. Which one holds the project's dependencies can't be told from its name, so pick it under "Lockfile" below.`;
+  switch (pick.why) {
+    case "subfolders": {
+      // GitHub cut its file list short, or plan() listed only its first files: there may be more than these.
+      const partial = state.pickContext?.partial ? " (and maybe more: the page sees only part of this repo's files)" : "";
+      $("verdict-detail").textContent = `${atRoot}, but inputs in its subfolders${partial}: ${some}. Which one holds the project's dependencies can't be told, so pick it under "Lockfile" below.`;
+      break;
+    }
+    case "project":
+      $("verdict-detail").textContent = `${atRoot}. ${pick.project}, so the one input in its subfolders, ${names[0]}, isn't taken for the project's. To check that one anyway, pick it under "Lockfile" below.`;
+      break;
+    case "rivals":
+      $("verdict-detail").textContent = `${atRoot}, and more than one file that could hold the project's dependencies: ${some}. Pick the one to check under "Lockfile" below.`;
+      break;
+    case "side":
+      $("verdict-detail").textContent = `${atRoot}, and the only inputs it has are, by their names, for development, tests, docs or examples, which wheelgap doesn't check on its own: ${some}. To check one anyway, pick it under "Lockfile" below.`;
+      break;
+    case "elsewhere":
+      $("verdict-detail").textContent = `${repoName} has no input that wheelgap reads by itself at its root or in a folder up to ${NESTED_DEPTH} down, only ${some}. To check one anyway, pick it under "Lockfile" below.`;
+      break;
+    default:
+      $("verdict-detail").textContent = names.length === 1
+        ? `${repoName} has no lockfile the page reads by itself, only ${names[0]}, which by its name is for development, tests, docs or examples, so it isn't checked on its own. To check it anyway, pick it under "Lockfile" below.`
+        : `${repoName} has no lockfile the page reads by itself, but ${names.length} requirements files: ${some}. Which one holds the project's dependencies can't be told from its name, so pick it under "Lockfile" below.`;
+  }
   // A link named a file this page can't check: say so, as the verdict would after a fallback.
   // A link named a file this page can't check: say so, as the verdict would after a fallback. And a repo that names
   // its PyPI package (setup.cfg, pyproject.toml) can also be checked as that package.
@@ -385,7 +422,9 @@ function renderVerdict() {
     type: "button", class: "chip shortcut", text: `+ ${s.label}`, "data-key": `next:${s.label}`,
     onclick: () => { state.pythons = s.pythons; state.platforms = s.platforms; runCheck(); },
   })));
-  $("verdict-detail").textContent = `${repoName} · ${r.lockfile}${state.ref && state.ref !== "HEAD" ? ` at ${state.ref}` : ""} · Python ${sortPythons(state.pythons).join(", ")} on ${state.platforms.length} platform${state.platforms.length === 1 ? "" : "s"}`;
+  // A file the page picked from a subfolder, as `wheelgap DIR` does with the only one there: said, never implied.
+  const subfolder = state.auto && state.subfolderPick === r.lockfile ? `. No input at the root: checked ${r.lockfile}, the only one in a subfolder.` : "";
+  $("verdict-detail").textContent = `${repoName} · ${r.lockfile}${state.ref && state.ref !== "HEAD" ? ` at ${state.ref}` : ""} · Python ${sortPythons(state.pythons).join(", ")} on ${state.platforms.length} platform${state.platforms.length === 1 ? "" : "s"}${subfolder}`;
   const alerts = [];
   if (state.fileNotice) {
     alerts.push(el("p", { class: "alert warn", text: `${state.fileNotice} Checked ${r.lockfile} instead.` }));
@@ -597,7 +636,7 @@ function renderNext() {
   $("prompt-note").hidden = isClean;
   $("cli").textContent = cliCommand(r, state.pythons, state.platforms);
   // The link names the lockfile only when a visit with the repo alone would start from another one.
-  $("badge-md").textContent = badgeMarkdown(state.repo, r.lockfile, autoPick(state.plan.lockfiles.filter((l) => !l.added), null).lock?.path ?? null);
+  $("badge-md").textContent = badgeMarkdown(state.repo, r.lockfile, autoPick(state.plan.lockfiles.filter((l) => !l.added), null, state.pickContext ?? {}).lock?.path ?? null);
   const caveats = [
     "A wheel on PyPI means pip and uv install it without compiling; it doesn't test that the package works there.",
     r.looked_up

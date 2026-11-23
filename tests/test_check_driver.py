@@ -437,6 +437,39 @@ def test_plan_lists_a_pyproject_after_the_lockfiles_in_its_folder():
     assert [l["offline"] for l in plan["lockfiles"]] == [True, False, True, False]
 
 
+def test_plan_says_whether_the_root_is_a_project_and_whether_it_listed_every_file():
+    # #238: autoPick() never takes a subfolder's only input for the project's beside a root setup.py or setup.cfg,
+    # or when plan() left files out, as `wheelgap DIR` doesn't (sources._unread_project, and its search's limit).
+    plan = json.loads(driver.plan(json.dumps(["setup.py", "setup.cfg", "tools/requirements.txt", "a/setup.py"])))
+    assert plan["root_project_files"] == ["setup.py", "setup.cfg"]
+    assert plan["more_lockfiles"] == 0
+    assert json.loads(driver.plan(json.dumps(["backend/uv.lock", "backend/setup.cfg"])))["root_project_files"] == []
+    many = [f"pkg{i}/uv.lock" for i in range(driver.MAX_LOCKFILES + 4)]
+    assert json.loads(driver.plan(json.dumps(many)))["more_lockfiles"] == 4
+
+
+@pytest.mark.parametrize(
+    ("text", "project"),
+    [
+        ("[tool.ruff]\nline-length = 100\n", False),  # tool settings only (transformers, beside its setup.py)
+        ('[tool.poetry.dependencies]\npython = "^3.12"\n', False),  # nothing but python
+        ('[build-system]\nrequires = ["setuptools"]\n', True),
+        ('[project]\nname = "x"\ndynamic = ["dependencies"]\n', True),
+        ('[tool.poetry.dependencies]\npython = "^3.12"\nrequests = "*"\n', True),
+        ('[tool.flit.metadata]\nmodule = "x"\n', True),
+        ('[tool.pdm]\ndependencies = ["requests"]\n', True),
+        ("[project\n", True),  # not TOML: `wheelgap DIR` takes it for the project's, as _unread_project does
+    ],
+)
+def test_check_says_whether_a_pyproject_it_couldnt_read_is_a_project(tmp_path, text, project):
+    (tmp_path / "pyproject.toml").write_text(text, encoding="utf-8")
+    bad = json.loads(driver.check(str(tmp_path), "pyproject.toml", options(), "{}", configs(tmp_path)))
+    assert bad["kind"] == "source" and bad["project"] is project
+    # The page reads `project` for the step to a subfolder only: other files' errors don't carry it.
+    (tmp_path / "uv.lock").write_text("not toml [", encoding="utf-8")
+    assert "project" not in json.loads(driver.check(str(tmp_path), "uv.lock", options(), "{}", configs(tmp_path)))
+
+
 def test_needs_lists_the_lookups_a_requirements_file_needs(tmp_path):
     (tmp_path / "requirements.txt").write_text("numpy==2.3.4\nfastlib>=2,<3\n\n# notes\n", encoding="utf-8")
     n = json.loads(driver.needs(str(tmp_path), "requirements.txt", configs(tmp_path)))
