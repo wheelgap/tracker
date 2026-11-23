@@ -580,11 +580,11 @@ test("the verdict counts checked and unchecked packages without claiming a compl
   );
   assert.equal(
     verdictText({ gaps: 0, unknown: 1, packages: 3, targets: 2 }, 2),
-    "No package is missing a wheel, but 1 of 3 checked packages couldn't be checked on some targets; 2 more weren't checked (their index isn't known to be PyPI)",
+    "No package is missing a wheel, but 1 of 3 couldn't be checked on some targets; 2 more weren't checked (their index isn't known to be PyPI)",
   );
   assert.equal(
     verdictText({ gaps: 0, unknown: 1, packages: 1, targets: 1 }, 1),
-    "No package is missing a wheel, but 1 of 1 checked package couldn't be checked on this target; 1 more wasn't checked (its index isn't known to be PyPI)",
+    "No package is missing a wheel, but 1 of 1 couldn't be checked on this target; 1 more wasn't checked (its index isn't known to be PyPI)",
   );
 });
 
@@ -646,7 +646,7 @@ test("shareText never reads as fully clean when a private index's packages weren
   assert.ok(!line.includes("✓"));
   assert.equal(
     shareText("owner/name", { ...clean, packages: 1 }, ["3.14"], ["linux-x86_64"], url, 1),
-    `owner/name: 1 dependency checked has a wheel on Python 3.14 for 1 platform; 1 more wasn't checked (their index isn't known to be PyPI) (checked with wheelgap) ${url}`,
+    `owner/name: 1 dependency checked has a wheel on Python 3.14 for 1 platform; 1 more wasn't checked (its index isn't known to be PyPI) (checked with wheelgap) ${url}`,
   );
   assert.equal(
     shareText("owner/name", { ...clean, gaps: 2 }, ["3.14"], ["linux-x86_64"], url, 3),

@@ -627,16 +627,22 @@ export function fixPrompt(repoName, result, fixes, pythons, platforms, gapWheels
   return lines.join("\n");
 }
 
+// What follows a count that leaves out the packages kept off pypi.org as a private index's: the headline, the share
+// line and the gaps note say it in the same words.
+export function notCheckedTail(n) {
+  return n ? `; ${n} more ${n === 1 ? "wasn't" : "weren't"} checked (${n === 1 ? "its" : "their"} index isn't known to be PyPI)` : "";
+}
+
 // The verdict's headline sentence.
 export function verdictText(h, notChecked = 0) {
   // Nothing to count (every package skipped, or none listed): never a ✓, which would read as a pass.
   if (h.packages === 0) return "No packages were checked";
-  const tail = notChecked ? `; ${notChecked} more ${notChecked === 1 ? "wasn't" : "weren't"} checked (${notChecked === 1 ? "its" : "their"} index isn't known to be PyPI)` : "";
+  const tail = notCheckedTail(notChecked);
   const checked = notChecked ? "checked " : "";
   const where = h.targets === 1 ? "this target" : `all ${h.targets} targets`;
   if (h.gaps === 0 && h.unknown) {
-    const count = notChecked ? `${h.packages} checked package${h.packages === 1 ? "" : "s"}` : h.packages;
-    return `No package is missing a wheel, but ${h.unknown} of ${count} couldn't be checked on ${h.targets === 1 ? "this target" : "some targets"}${tail}`;
+    // "1 of 3 couldn't be checked", not "1 of 3 checked packages couldn't be checked", which contradicts itself.
+    return `No package is missing a wheel, but ${h.unknown} of ${h.packages} couldn't be checked on ${h.targets === 1 ? "this target" : "some targets"}${tail}`;
   }
   if (h.gaps === 0) {
     const count = h.packages === 1 ? `1 ${checked}package has` : `All ${h.packages} ${checked}packages have`;
@@ -651,7 +657,7 @@ export function verdictText(h, notChecked = 0) {
 // pasted where the page's alerts don't follow it, so `notChecked` (the packages left off pypi.org as a private
 // index's, which the counts leave out) is said in the line itself, and a result with any is never a ✓.
 export function shareText(repoName, h, pythons, platforms, url, notChecked = 0) {
-  const tail = `${notChecked ? `; ${notChecked} more ${notChecked === 1 ? "wasn't" : "weren't"} checked (their index isn't known to be PyPI)` : ""} (checked with wheelgap) ${url}`;
+  const tail = `${notCheckedTail(notChecked)} (checked with wheelgap) ${url}`;
   if (h.packages === 0) {
     return `${repoName}: no dependencies were checked (checked with wheelgap) ${url}`;
   }

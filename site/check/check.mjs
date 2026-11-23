@@ -5,7 +5,7 @@ import {
   PLATFORMS, PYTHONS, parseRepo, inputHint, pickRequestedFile, autoPick, toQuery, fromQuery, sortPythons, freeThreaded,
   fixFor, rowsFor, headline, cliCommand, packageCliCommand, fixPrompt, verdictText, shareText, nextSteps, validRef, labVerdict, labFor, canonicalName, gapWheelFor,
   gapWheelFixText, withoutUnreadable, unreadableReason, privatePyprojectReason, tileText, missedText, privateText, badgeMarkdown, fixLinks,
-  NESTED_DEPTH,
+  notCheckedTail, NESTED_DEPTH,
 } from "./check-logic.mjs";
 
 const $ = (id) => document.getElementById(id);
@@ -574,7 +574,10 @@ function renderTable() {
     ? `${r.lockfile} doesn't allow Python ${state.python} (requires-python ${r.requires_python}), so it has no wheels for it to check. Widen requires-python and re-lock first.`
     : rows.length
       ? `${rows.length} package${rows.length === 1 ? "" : "s"}. The fix column names the lowest newer release with a wheel for every gap that has one, without losing a wheel elsewhere.`
-      : "None: every package installs from a wheel here.";
+      : notCheckedCount(r)
+        // Packages kept off pypi.org aren't in the rows: "every package" would claim a pass for them too.
+        ? `None among the checked packages${notCheckedTail(notCheckedCount(r))}.`
+        : "None: every package installs from a wheel here.";
   const shownLab = rows.some((row) => labels.some((t) => row.statuses[t.label] === "source" && labFor(state.lab[canonicalName(row.name)]?.builds, row.version, t.label)));
   if (shownLab) {
     $("gaps-note").textContent += " Under a source build, what the tracker's build lab saw building that release from source on GitHub's runners, which have compilers and many system libraries preinstalled (hover for details).";

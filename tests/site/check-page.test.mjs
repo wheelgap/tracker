@@ -1348,3 +1348,43 @@ test("renderTargets passes the distinct private package count to the platform ti
   assert.equal(tile.kids[0], "?");
   assert.equal(tile.kids[1].attrs.text, "1 not checked");
 });
+
+test("the gaps note never says every package has a wheel when a private index's packages weren't checked", () => {
+  const source = read("check.mjs");
+  const rt = source.match(/^function renderTable\(\) \{.*?^}$/ms);
+  const nc = source.match(/^function notCheckedCount\(.*?^}$/ms);
+  assert.ok(rt && nc, "renderTable and notCheckedCount are in check.mjs");
+  const note = (extra) => {
+    const made = new Map();
+    const $ = (id) => {
+      if (!made.has(id)) made.set(id, { textContent: "", hidden: false, replaceChildren() {} });
+      return made.get(id);
+    };
+    const state = {
+      python: "3.14", platform: null, showAll: false, fixes: {}, gapWheels: null, lab: {},
+      result: {
+        lockfile: "Pipfile.lock", outside_lock: [], rows: [],
+        targets: [{ label: "3.14 linux-x86_64", python: "3.14", platform: "linux-x86_64" }], ...extra,
+      },
+    };
+    new Function(
+      "$", "state", "el", "rowsFor", "fixFor", "gapWheelFixText", "canonicalName", "fixLinks", "labFor", "labVerdict",
+      "gapWheelFor", "notCheckedTail", "NAMES", "STATUS_TEXT", "LAB_SHORT", "FIX_TEXT", "SHOWN",
+      `${nc[0]}\n${rt[0]}; return renderTable;`,
+    )(
+      $, state, () => ({}), checkLogic.rowsFor, checkLogic.fixFor, checkLogic.gapWheelFixText, checkLogic.canonicalName,
+      checkLogic.fixLinks, checkLogic.labFor, checkLogic.labVerdict, checkLogic.gapWheelFor, checkLogic.notCheckedTail,
+      {}, {}, {}, {}, 60,
+    )();
+    return $("gaps-note").textContent;
+  };
+  assert.equal(note({}), "None: every package installs from a wheel here.");
+  assert.equal(
+    note({ private: ["corp-utils"], private_count: 2 }),
+    "None among the checked packages; 1 more wasn't checked (its index isn't known to be PyPI).",
+  );
+  assert.equal(
+    note({ private: ["corp-a", "corp-b"] }),
+    "None among the checked packages; 2 more weren't checked (their index isn't known to be PyPI).",
+  );
+});
