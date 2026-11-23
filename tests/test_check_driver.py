@@ -444,8 +444,34 @@ def test_plan_says_whether_the_root_is_a_project_and_whether_it_listed_every_fil
     assert plan["root_project_files"] == ["setup.py", "setup.cfg"]
     assert plan["more_lockfiles"] == 0
     assert json.loads(driver.plan(json.dumps(["backend/uv.lock", "backend/setup.cfg"])))["root_project_files"] == []
+    assert plan["unlisted_inputs"] == []
     many = [f"pkg{i}/uv.lock" for i in range(driver.MAX_LOCKFILES + 4)]
     assert json.loads(driver.plan(json.dumps(many)))["more_lockfiles"] == 4
+
+
+def test_plan_names_the_inputs_wheelgap_dir_finds_in_folders_it_skips():
+    # sources._nested_inputs() on wheelgap main searches every folder up to 3 down but hidden ones, node_modules,
+    # site-packages and __pycache__; plan() also skips build/, dist/, tests/... (suggest_targets._SKIP_DIRS). The page
+    # can't list those, so autoPick() never takes the one input it lists for the only one beside them.
+    paths = [
+        "backend/uv.lock",
+        "build/requirements.txt",
+        "dist/pkg/uv.lock",
+        "target/a/b/pyproject.toml",
+        "tests/requirements.txt",
+        "build/a/b/c/uv.lock",  # 4 folders down
+        "build/requirements-dev.txt",  # not a name a folder's input has
+        ".venv/uv.lock",
+        "build/.cache/uv.lock",
+        "node_modules/x/uv.lock",
+        "a/site-packages/pyproject.toml",
+        "uv.lock",  # the root's: plan() lists it
+    ]
+    plan = json.loads(driver.plan(json.dumps(paths)))
+    assert plan["unlisted_inputs"] == [
+        "build/requirements.txt", "dist/pkg/uv.lock", "target/a/b/pyproject.toml", "tests/requirements.txt",
+    ]
+    assert [l["path"] for l in plan["lockfiles"]] == ["uv.lock", "backend/uv.lock"]
 
 
 @pytest.mark.parametrize(

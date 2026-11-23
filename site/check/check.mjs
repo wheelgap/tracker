@@ -183,7 +183,11 @@ function onLoaded({ plan, detected, truncated, ref, root, fileInTree, projectNam
   Object.assign(state, { plan, detected, truncated, ref, root, projectName });
   // What autoPick() needs to follow `wheelgap DIR` into the subfolders when the root has no input: whether the root
   // is a project of its own, and whether the whole file list is known (GitHub's tree, and plan()'s list, can be cut).
-  state.pickContext = { rootProjectFiles: plan.root_project_files || [], pyprojects: {}, partial: Boolean(truncated || plan.more_lockfiles) };
+  // Inputs in folders plan() skips (build/, dist/) that `wheelgap DIR` searches are known by name only (unlistedInputs).
+  state.pickContext = {
+    rootProjectFiles: plan.root_project_files || [], pyprojects: {}, partial: Boolean(truncated || plan.more_lockfiles),
+    unlistedInputs: plan.unlisted_inputs || [],
+  };
   const q = state.query;
   const requested = q?.lockfile || state.repo.file || null;
   const picked = pickRequestedFile(plan.lockfiles, requested, Boolean(fileInTree), state.repo.dir, state.pickContext);
@@ -316,6 +320,8 @@ function showPackageFallback(packageName) {
 // Without a `why`, they're #229's requirements files under other names.
 function chooseFile(files, pick = {}) {
   state.lockfile = null;
+  // Drop the lock= of a file the page tried and moved on from: a reload or a shared link would check it as named.
+  history.replaceState(null, "", `?${toQuery({ ...state, repo: { ...state.repo, ref: state.repo.ref } })}`);
   state.result = null;
   status("");
   $("go").disabled = false;
@@ -327,8 +333,10 @@ function chooseFile(files, pick = {}) {
   $("verdict").textContent = "Pick the file to check";
   switch (pick.why) {
     case "subfolders": {
-      // GitHub cut its file list short, or plan() listed only its first files: there may be more than these.
-      const partial = state.pickContext?.partial ? " (and maybe more: the page sees only part of this repo's files)" : "";
+      // GitHub cut its file list short, plan() listed only its first files, or it has inputs in folders the page
+      // doesn't list (build/, dist/): there may be more than these.
+      const partial = state.pickContext?.partial || state.pickContext?.unlistedInputs?.length
+        ? " (and maybe more: the page sees only part of this repo's files)" : "";
       $("verdict-detail").textContent = `${atRoot}, but inputs in its subfolders${partial}: ${some}. Which one holds the project's dependencies can't be told, so pick it under "Lockfile" below.`;
       break;
     }
@@ -349,7 +357,6 @@ function chooseFile(files, pick = {}) {
         ? `${repoName} has no lockfile the page reads by itself, only ${names[0]}, which by its name is for development, tests, docs or examples, so it isn't checked on its own. To check it anyway, pick it under "Lockfile" below.`
         : `${repoName} has no lockfile the page reads by itself, but ${names.length} requirements files: ${some}. Which one holds the project's dependencies can't be told from its name, so pick it under "Lockfile" below.`;
   }
-  // A link named a file this page can't check: say so, as the verdict would after a fallback.
   // A link named a file this page can't check: say so, as the verdict would after a fallback. And a repo that names
   // its PyPI package (setup.cfg, pyproject.toml) can also be checked as that package.
   const cmd = state.projectName ? packageCliCommand(state.projectName, state.pythons, state.platforms) : null;

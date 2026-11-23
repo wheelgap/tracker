@@ -140,8 +140,9 @@ function rootProject(ctx) {
 // The file the page checks by itself, with the rules of `wheelgap DIR` (load_directory() and _nested_inputs() in
 // wheelgap's src/wheelgap/sources.py on main, after 0.13.0; the page pins 0.13.0, so they're mirrored here):
 // 1. An exactly-named file in the folder a link names, else in the root: pickLockfile()'s pick, as before.
-// 2. Requirements files under other names in the root (`other`, from plan(); in the root or its requirements/
-//    folder): the only one, unless its name says it's for development, tests, docs or examples (isSideFile), which
+// 2. Requirements files under other names in the root, as wheelgap's _other_requirements() reads them:
+//    requirements*.txt there and any .txt in its requirements/ folder (plan() also marks prod-requirements.txt and
+//    the like `other`, which `wheelgap DIR` doesn't read). The only one, unless its name says it's for development, tests, docs or examples (isSideFile), which
 //    `wheelgap DIR` never checks on its own. With several, none: which one holds the project's dependencies can't be
 //    told from a name.
 // 3. Otherwise one input per subfolder up to NESTED_DEPTH folders down (the folders plan() skips are left out), as
@@ -149,7 +150,8 @@ function rootProject(ctx) {
 //    pyproject.toml counts whether or not it lists dependencies, which the page can't tell before fetching it: that
 //    can only make the page ask where `wheelgap DIR` wouldn't, never pick where it would ask. The only one is
 //    checked (`why: "subfolder"`) when its folders' names aren't side words, the whole file list is known
-//    (`ctx.partial` false), the root isn't a project of its own (rootProject), and no other requirements file could as
+//    (`ctx.partial` false, and no input that isn't side-named in a folder plan() skips but `wheelgap DIR` searches,
+//    `ctx.unlistedInputs`: build/requirements.txt), the root isn't a project of its own (rootProject), and no other requirements file could as
 //    well be the project's (a lone side one in the root, or one under another name beside it).
 // Every other case picks none and returns the files to ask between in `choose`, with `why` saying in which way, so
 // the page says so in `wheelgap DIR`'s words (chooseFile): "subfolders", "project" (with `project`, the reason),
@@ -164,7 +166,13 @@ export function autoPick(lockfiles, dir, ctx = {}) {
     if (here) return { lock: here, choose: null };
   }
   const others = lockfiles.filter((l) => l.other);
-  const rootOthers = others.filter((l) => ["", "requirements"].includes(folderOf(l.path)));
+  // wheelgap's _other_requirements(folder): requirements*.txt in the folder, and any *.txt in its requirements/
+  // folder. plan() also marks *-requirements.txt and *_requirements.txt, which `wheelgap DIR` doesn't read.
+  const otherIn = (folder) => (l) => {
+    const at = folderOf(l.path);
+    return at === (folder ? `${folder}/requirements` : "requirements") || (at === folder && l.path.split("/").pop().startsWith("requirements"));
+  };
+  const rootOthers = others.filter(otherIn(""));
   if (rootOthers.length > 1) return { lock: null, choose: rootOthers };
   if (rootOthers.length === 1 && !isSideFile(rootOthers[0].path)) return { lock: rootOthers[0], choose: null };
 
@@ -177,13 +185,14 @@ export function autoPick(lockfiles, dir, ctx = {}) {
     folders.add(folder);
     (isSideFile(l.path) ? side : main).push(l);
   }
-  if (main.length === 1 && !ctx.partial) {
+  const partial = ctx.partial || (ctx.unlistedInputs || []).some((p) => !isSideFile(p));
+  if (main.length === 1 && !partial) {
     const [only] = main;
     const project = rootProject(ctx);
     if (project) return { lock: null, choose: main, why: "project", project };
     const folder = folderOf(only.path);
     const beside = fileKind(only.path) === "requirements"
-      ? others.filter((l) => [folder, `${folder}/requirements`].includes(folderOf(l.path)) && !isSideFile(l.path.split("/").pop()))
+      ? others.filter((l) => otherIn(folder)(l) && !isSideFile(l.path.split("/").pop()))
       : [];
     const rivals = [...rootOthers, ...beside];
     if (rivals.length) return { lock: null, choose: [only, ...rivals], why: "rivals" };

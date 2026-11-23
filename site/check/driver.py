@@ -197,6 +197,17 @@ def plan(paths_json: str) -> str:
             # A root setup.py or setup.cfg makes the root a project of its own, whose dependencies wheelgap can't read,
             # so `wheelgap DIR` doesn't take the one input in a subfolder for the project's (sources._unread_project).
             "root_project_files": [name for name in ("setup.py", "setup.cfg") if name in paths],
+            # Inputs `wheelgap DIR` finds up to 3 folders down (sources._nested_inputs: not in a hidden folder,
+            # node_modules, site-packages or __pycache__) in a folder plan() skips (build/, dist/, target/, tests/...):
+            # the page can't list them, so with any that isn't side-named it never takes the one it sees for the only one.
+            "unlisted_inputs": sorted(
+                p
+                for p in paths
+                if (pp := PurePosixPath(p)).name in (*LOCKFILES, "pyproject.toml")
+                and 2 <= len(pp.parts) <= 4
+                and _skipped_folder(pp.parts[:-1])
+                and not any(f.startswith(".") or f in ("node_modules", "site-packages", "__pycache__") for f in pp.parts[:-1])
+            ),
             # Every installer settings file in the repo, wherever it is: configs_for() picks the ones a check reads.
             # In any case: on a case-insensitive disk (macOS, Windows) wheelgap reads a Pyproject.toml too.
             "configs": sorted(p for p in paths if PurePosixPath(p).name.lower() in CONFIG_NAMES),

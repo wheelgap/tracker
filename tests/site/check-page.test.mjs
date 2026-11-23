@@ -807,8 +807,8 @@ test("with several requirements files under other names and nothing else, the pa
   const shown = new Map();
   const box = (id) => (shown.has(id) ? shown.get(id) : shown.set(id, { hidden: true, textContent: "", replaceChildren(...kids) { this.children = kids; } }).get(id));
   const chooseWith = (st) => new Function(
-    "state", "$", "el", "status", "packageCliCommand", "renderSetup", "hideResultSections", `${chooseSrc}; return chooseFile;`,
-  )(st, box, (tag, attrs = {}, ...kids) => ({ tag, attrs, kids }), () => {}, checkLogic.packageCliCommand, () => {}, () => {});
+    "state", "$", "el", "status", "packageCliCommand", "renderSetup", "hideResultSections", "history", "toQuery", `${chooseSrc}; return chooseFile;`,
+  )(st, box, (tag, attrs = {}, ...kids) => ({ tag, attrs, kids }), () => {}, checkLogic.packageCliCommand, () => {}, () => {}, { replaceState() {} }, checkLogic.toQuery);
   const files = [{ path: "requirements/base.txt" }, { path: "requirements/docs.txt" }];
   chooseWith({ repo: { owner: "o", name: "r" }, fileNotice: "README.md isn't a file this page reads.", projectName: "httpie", pythons: ["3.14"], platforms: ["linux-x86_64"] })(files);
   const alerts = box("alerts").children;
@@ -836,7 +836,7 @@ test("with several requirements files under other names and nothing else, the pa
 
 // Exercise the page's actual selection and render pipeline, with the worker and DOM stood in. The driver contract
 // is pinned by test_check_driver.py; these tests check what the visitor sees after that result reaches the page.
-function resultPage(locks, query = null, { dir = null, rootProjectFiles = [] } = {}) {
+function resultPage(locks, query = null, { dir = null, rootProjectFiles = [], unlistedInputs = [] } = {}) {
   const source = read("check.mjs");
   const fn = (name) => source.match(new RegExp(`^function ${name}\\(.*?^}$`, "ms"))[0];
   const elements = new Map();
@@ -866,16 +866,17 @@ function resultPage(locks, query = null, { dir = null, rootProjectFiles = [] } =
   const state = { repo: { owner: "example", name: "project", dir }, query,
     python: null, platform: null, pythons: [], platforms: [] };
   const posts = [];
+  const urls = []; // the page's address, each time it's replaced
   const env = { ...checkLogic, $, state, document: { createElement: () => new Element() },
     NAMES: Object.fromEntries(checkLogic.PLATFORMS), STAGES: {},
-    worker: { postMessage: (m) => posts.push(m) }, history: { replaceState() {} },
+    worker: { postMessage: (m) => posts.push(m) }, history: { replaceState: (data, title, url) => urls.push(url) },
     status() {}, loadLab() {}, keepFocus: (fn) => fn(), renderTargets() {}, renderTable() {}, renderNext() {},
   };
   const functions = ["el", "chip", "onLoaded", "runCheck", "onResult", "render", "renderVerdict", "renderSetup", "hideResultSections", "chooseFile"];
   const page = new Function(...Object.keys(env), `let seq = 0; ${functions.map(fn).join("\n")}; return {onLoaded, onResult};`)(...Object.values(env));
-  page.onLoaded({ plan: { lockfiles: locks, workflows: [], root_project_files: rootProjectFiles },
+  page.onLoaded({ plan: { lockfiles: locks, workflows: [], root_project_files: rootProjectFiles, unlisted_inputs: unlistedInputs },
     detected: { found: [], unreadable: [], pythons: ["3.14"], platforms: ["linux-x86_64"] }, ref: "HEAD", root: "/repos/1" });
-  return { ...page, $, state, posts };
+  return { ...page, $, state, posts, urls };
 }
 
 const privateResult = {
@@ -982,6 +983,11 @@ test("after the root pyproject.toml, a repo shaped like transformers shows the c
     assert.match(page.$("read-list").textContent, /Not read: pyproject.toml \(pyproject.toml: no \[project\] table/);
     assert.equal(page.$("gaps-title").closest().hidden, true);
     assert.equal(page.$("setup-title").closest().hidden, false); // the picker
+    // The address drops the lock= of the pyproject.toml it moved on from: reloaded or shared, it asks again rather
+    // than checking that file as one a link named.
+    assert.match(page.urls[0], /[?&]lock=pyproject\.toml(&|$)/);
+    assert.doesNotMatch(page.urls.at(-1), /lock=/);
+    assert.match(page.urls.at(-1), /^\?repo=example\/project&py=3\.14&t=linux-x86_64$/);
   }
   // transformers' tree today: the benchmark and example folders are ones plan() skips, so after the root
   // pyproject.toml only utils/checkers-requirements.txt is left, which `wheelgap DIR` doesn't read by itself.
@@ -1013,6 +1019,10 @@ test("the only input in a subfolder is checked, and the verdict says it came fro
   page.onResult({ ...privateResult, lockfile: "backend/uv.lock", looked_up: false, packages: 2, private: [], private_count: 0, skipped: [] });
   assert.match(page.$("verdict").textContent, /All 2 packages have a wheel/);
   assert.match(page.$("verdict-detail").textContent, /\. No input at the root: checked backend\/uv\.lock, the only one in a subfolder\.$/);
+  // An input `wheelgap DIR` finds in a folder plan() skips (build/): the one listed isn't the only one, so it asks.
+  const build = resultPage([{ path: "backend/uv.lock", offline: true }], null, { unlistedInputs: ["build/requirements.txt"] });
+  assert.equal(build.posts.length, 0);
+  assert.match(build.$("verdict-detail").textContent, /but inputs in its subfolders \(and maybe more: the page sees only part of this repo's files\): backend\/uv\.lock\./);
   // Several, as in langchain's libs/: asked straight away, in `wheelgap DIR`'s words.
   const libs = resultPage(["core", "langchain", "partners/openai"].map((d) => ({ path: `libs/${d}/uv.lock`, offline: true })));
   assert.equal(libs.posts.length, 0);

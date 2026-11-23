@@ -297,6 +297,31 @@ test("autoPick asks when the root is a project, the subfolder inputs are several
   assert.equal(autoPick([at("docker/main/uv.lock"), req("docker/main/requirements-wheels.txt")], null).lock.path, "docker/main/uv.lock");
 });
 
+test("autoPick reads the root's other requirements files as wheelgap's _other_requirements() does", () => {
+  // Only requirements*.txt in a folder, and any .txt in its requirements/ folder: plan() also marks
+  // prod-requirements.txt and dev_requirements.txt, which `wheelgap DIR` doesn't read, so they don't decide the pick.
+  const backend = at("backend/uv.lock");
+  for (const names of [["prod-requirements.txt"], ["dev-requirements.txt"], ["dev-requirements.txt", "test-requirements.txt"], ["dev_requirements.txt"]]) {
+    assert.deepEqual(autoPick([backend, ...names.map(req)], null), { lock: backend, choose: null, why: "subfolder" }, names.join(" "));
+  }
+  // Nor beside a subfolder's requirements.txt: backend/docker-requirements.txt is no rival, backend/requirements-prod.txt is.
+  const reqs = at("backend/requirements.txt");
+  assert.deepEqual(autoPick([reqs, req("backend/docker-requirements.txt")], null), { lock: reqs, choose: null, why: "subfolder" });
+  assert.equal(autoPick([reqs, req("backend/requirements-prod.txt")], null).why, "rivals");
+  // A lone one of those at the root is no input `wheelgap DIR` reads: offered, not checked.
+  assert.deepEqual(autoPick([req("prod-requirements.txt")], null), { lock: null, choose: [req("prod-requirements.txt")], why: "elsewhere" });
+});
+
+test("autoPick never takes the one input it lists for the only one when wheelgap DIR finds more in folders plan() skips", () => {
+  // build/requirements.txt: plan() skips build/ (wheelgap 0.13.0's suggest_targets._SKIP_DIRS), wheelgap's
+  // _nested_inputs() doesn't, so `wheelgap DIR` asks between it and backend/uv.lock.
+  const backend = at("backend/uv.lock");
+  assert.deepEqual(autoPick([backend], null, { unlistedInputs: ["build/requirements.txt"] }), { lock: null, choose: [backend], why: "subfolders" });
+  assert.deepEqual(autoPick([backend], null, { unlistedInputs: ["dist/pkg/uv.lock"] }).lock, null);
+  // A side one there (tests/, examples/) doesn't count against it, as in `wheelgap DIR`.
+  assert.deepEqual(autoPick([backend], null, { unlistedInputs: ["tests/requirements.txt", "examples/app/uv.lock"] }), { lock: backend, choose: null, why: "subfolder" });
+});
+
 test("autoPick keeps root files first, and offers deeper files without picking one", () => {
   // A file at the root, or in the folder a link names, is picked as before, whatever is in the subfolders.
   const repo = [at("uv.lock"), at("Doc/pylock.toml"), at("libs/core/uv.lock"), at("libs/langchain/uv.lock")];
