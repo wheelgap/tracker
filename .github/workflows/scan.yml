@@ -29,9 +29,9 @@ permissions:
 
 env:
   # The wheelgap release that produces the data. Bump it to pick up new targets.
-  WHEELGAP: "wheelgap==0.9.0"
-  # The optional passes need 0.11.0 for --deps and the older-release fallback. Keep the core scan pin independent.
-  WHEELGAP_INSTALL: "wheelgap==0.11.0"
+  WHEELGAP: "wheelgap==0.14.0"
+  # The one the optional passes (install trees, releases with wheels, issue trackers) run.
+  WHEELGAP_INSTALL: "wheelgap==0.14.0"
   # The Pyodide releases whose own builds count as `bundled` (--pyodide-lock), one per Python the scan has a
   # pyodide target for. Each is a committed copy of the release's pyodide-lock.json, listed with its URL and
   # sha256 in pyodide/locks.json, so the scan never depends on a CDN and a Pyodide release doesn't change the
@@ -99,9 +99,7 @@ jobs:
         # Extra data. A slow or unavailable index must still leave the night's scan publishable.
         continue-on-error: true
         timeout-minutes: 5
-        # wheelgap.pypi.extract_issues_url is new in 0.12.0, and 0.13.0 skips a URL it can't parse (#440): use
-        # WHEELGAP_INSTALL here once it reaches 0.13.0.
-        run: uv run --no-project --with "wheelgap==0.13.0" python scripts/scan_issues.py data/coverage.json
+        run: uv run --no-project --with "$WHEELGAP_INSTALL" python scripts/scan_issues.py data/coverage.json
       - name: Update history
         run: python3 scripts/update_history.py data/coverage.json data/history.json
       - name: Record the wheels gained and lost

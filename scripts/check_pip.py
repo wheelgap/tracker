@@ -1,6 +1,6 @@
 """Cross-check the scan against pip, and write the agreement rate (#19).
 
-    uv run --no-project --with "wheelgap==0.9.0" --with "pip==26.3" \\
+    uv run --no-project --with "wheelgap==0.14.0" --with "pip==26.3" \\
         python scripts/check_pip.py data/coverage.json agreement/agreement.json [--top 200] [--target LABEL ...]
 
 For the top packages of the scan (200 by default) and a few targets (3.13 on linux-x86_64, linux-aarch64,
