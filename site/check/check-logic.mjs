@@ -65,11 +65,16 @@ const pickFields = (value, fields) => isObject(value)
   ? Object.fromEntries(fields.filter((key) => Object.hasOwn(value, key)).map((key) => [key, value[key]]))
   : value;
 
-// wheelgap 0.13.0: pypi._files/_supports_python/_fill_json_data and suggest._has_wheel read these file fields.
-// Preserve malformed lists/entries and absent fields: normalising them to [] could turn "unknown" into a gap.
-const trimFiles = (files) => Array.isArray(files)
-  ? files.map((file) => pickFields(file, ["filename", "requires_python", "yanked"]))
-  : files;
+// wheelgap 0.14.0: pypi._files/_supports_python/_fill_json_data and suggest._has_wheel read these file fields, and
+// two more for a requirement with --hash options (pypi._sha256: digests.sha256) and under a uv exclude-newer
+// (cutoff.before_cutoff: upload_time_iso_8601). Preserve malformed lists/entries and absent fields: normalising them to
+// [] could turn "unknown" into a gap. Only a digests object's sha256 is kept; anything else there stays as it is.
+const trimFile = (file) => {
+  const kept = pickFields(file, ["filename", "requires_python", "yanked", "upload_time_iso_8601", "digests"]);
+  if (isObject(kept) && Object.hasOwn(kept, "digests")) kept.digests = pickFields(kept.digests, ["sha256"]);
+  return kept;
+};
+const trimFiles = (files) => Array.isArray(files) ? files.map(trimFile) : files;
 
 // Both range resolution (pypi._newest_matching) and fixes (suggest.suggest) read version -> file list.
 export function trimReleases(releases) {
@@ -100,8 +105,8 @@ export function pickLockfile(lockfiles, dir) {
 }
 
 // Words in a requirements file's name (requirements-dev.txt, requirements/test.txt) or its folders that say its
-// packages are for the tests, the docs, an example or development, not the project itself: wheelgap's _SIDE_WORDS
-// (src/wheelgap/sources.py on main, after 0.13.0), split the way its _is_side() splits a name.
+// packages are for the tests, the docs, an example or development, not the project itself: wheelgap 0.14.0's
+// sources._SIDE_WORDS, split the way its _is_side() splits a name (tests/test_check_driver.py checks the words).
 const SIDE_WORDS = new Set([
   "test", "tests", "testing", "example", "examples", "sample", "samples", "demo", "demos", "doc", "docs",
   "bench", "benchmark", "benchmarks", "fixtures", "templates",
@@ -114,14 +119,14 @@ export function isSideFile(path) {
   return [...parts, stem].some((part) => part.toLowerCase().split(/[^a-z0-9]+/).some((word) => SIDE_WORDS.has(word)));
 }
 
-// How far below the root `wheelgap DIR` looks for an input when the root has none (wheelgap's NESTED_DEPTH, on main
-// after 0.13.0): backend/uv.lock is 1 folder down.
+// How far below the root `wheelgap DIR` looks for an input when the root has none (wheelgap 0.14.0's
+// sources.NESTED_DEPTH): backend/uv.lock is 1 folder down.
 export const NESTED_DEPTH = 3;
 
 const folderOf = (path) => (path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "");
 
 // Why the root is a project of its own, in `wheelgap DIR`'s words, so that the one input in its subfolders isn't taken
-// for the project's (wheelgap's load_directory() and _unread_project() on main): a root pyproject.toml whose [project]
+// for the project's (wheelgap 0.14.0's load_directory() and _unread_project()): a root pyproject.toml whose [project]
 // lists nothing, a root setup.py or setup.cfg (`ctx.rootProjectFiles`, from plan()), or a root pyproject.toml that
 // describes a project the page couldn't check. `ctx.pyprojects` says what became of each pyproject.toml the page
 // tried and moved on from (onResult): "empty", "unread" (wheelgap refused it, and it's a project or may be one),
@@ -138,7 +143,7 @@ function rootProject(ctx) {
 }
 
 // The file the page checks by itself, with the rules of `wheelgap DIR` (load_directory() and _nested_inputs() in
-// wheelgap's src/wheelgap/sources.py on main, after 0.13.0; the page pins 0.13.0, so they're mirrored here):
+// wheelgap 0.14.0's src/wheelgap/sources.py, mirrored here since this runs before Python has loaded):
 // 1. An exactly-named file in the folder a link names, else in the root: pickLockfile()'s pick, as before.
 // 2. Requirements files under other names in the root, as wheelgap's _other_requirements() reads them:
 //    requirements*.txt there and any .txt in its requirements/ folder (plan() also marks prod-requirements.txt and
@@ -207,15 +212,17 @@ export function autoPick(lockfiles, dir, ctx = {}) {
   return { lock: null, choose: lockfiles, why: "elsewhere" };
 }
 
-// wheelgap 0.13.0's sources.file_kind, which picks a file's reader by its name: the reader, or null for a name it
-// doesn't read (and a pip report's .json, which this page doesn't offer). Re-check it when worker.mjs's pin changes:
-// later releases read more names (a PEP 723 script's *.py.lock), which 0.13.0 refuses as "don't know how to read".
+// wheelgap 0.14.0's sources.file_kind, which picks a file's reader by its name: the reader, or null for a name it
+// doesn't read (and a PEP 723 script, a conda environment file or a pip report's .json, which this page doesn't
+// offer). Re-check it when worker.mjs's pin changes. A script's lock (tool.py.lock, from `uv lock --script`) is a
+// uv.lock since 0.14.0, ahead of requirements*.lock, so requirements.py.lock is one too.
 const KINDS = { "uv.lock": "uv", "pylock.toml": "pylock", "poetry.lock": "poetry", "pdm.lock": "pdm", "Pipfile.lock": "pipfile", "pixi.lock": "pixi" };
 export function fileKind(path) {
   const base = String(path ?? "").split("/").pop();
   if (base === "pyproject.toml") return "pyproject";
   if (Object.hasOwn(KINDS, base)) return KINDS[base];
   if (base.startsWith("pylock.") && base.endsWith(".toml")) return "pylock";
+  if (base.endsWith(".py.lock")) return "uv";
   if (base.startsWith("requirements") && base.endsWith(".lock")) return "requirements";
   if (base.endsWith(".lock") && base.includes("uv")) return "uv";
   if (base.endsWith(".txt") || base.endsWith(".in")) return "requirements";
@@ -546,8 +553,28 @@ export function packageCliCommand(packageName, pythons, platforms) {
 }
 
 // Look up a fill the Python driver already matched, for display only.
+const gapWheelCell = (row, gapWheels, target) =>
+  gapWheels?.cells.find((cell) => cell.name === row.name && cell.version === row.version && cell.target === target);
 export function gapWheelFor(row, gapWheels, target) {
-  return gapWheels?.cells.some((cell) => cell.name === row.name && cell.version === row.version && cell.target === target) ?? false;
+  return Boolean(gapWheelCell(row, gapWheels, target));
+}
+
+// The "gap wheel" tag's tooltip. As wheelgap --fix says it, a gap wheel for a gap an upgrade fixes too (the driver's
+// `fallback`) is only for when the package can't be upgraded.
+export function gapWheelTitle(row, gapWheels, target) {
+  const cell = gapWheelCell(row, gapWheels, target);
+  if (!cell) return "";
+  return cell.fallback ? `if you can't upgrade ${row.name}: ${gapWheels.unofficial}` : gapWheels.unofficial;
+}
+
+// The note above the gap wheel instructions, on the page itself: a touch screen or a keyboard never shows a tooltip.
+// With an upgrade among the fixes, it says what --fix's "As a fallback" says: upgrade first.
+export function gapWheelsNote(gapWheels) {
+  if (!gapWheels?.text) return "";
+  const what = `Gap wheels are ${gapWheels.unofficial}.`;
+  return gapWheels.upgrades
+    ? `Upgrade first: where the Fix column names an official release, a gap wheel is only for when you can't upgrade. ${what}`
+    : what;
 }
 
 // The Fix column's text when no release fixes a row: how many of the row's gaps a gap wheel fills, so a wheel for
@@ -616,7 +643,10 @@ export function fixPrompt(repoName, result, fixes, pythons, platforms, gapWheels
   section("private", "These weren't looked up, since the lockfile doesn't record their index as PyPI (Poetry and PDM locks don't, nor Git or path sources); look for a newer release with wheels on the index they come from:");
   section("pending", "These weren't looked up on PyPI, so check them with `uvx wheelgap --explain --suggest`:");
   if (gapWheels?.text) {
-    lines.push(`For gaps a release bump does not cover, these gap wheels are ${gapWheels.unofficial}:`, gapWheels.text, "");
+    const when = gapWheels.upgrades
+      ? "As a fallback, only where a bump above isn't possible or no release covers the gap"
+      : "For gaps a release bump does not cover";
+    lines.push(`${when}, these gap wheels are ${gapWheels.unofficial}:`, gapWheels.text, "");
   }
   lines.push(
     "Check each bump against our version constraints (a new major version may need code changes), update the lockfile with the project's own tool, and confirm with:",

@@ -4,7 +4,7 @@
 import {
   PLATFORMS, PYTHONS, parseRepo, inputHint, pickRequestedFile, autoPick, toQuery, fromQuery, sortPythons, freeThreaded,
   fixFor, rowsFor, headline, cliCommand, packageCliCommand, fixPrompt, verdictText, shareText, nextSteps, validRef, labVerdict, labFor, canonicalName, gapWheelFor,
-  gapWheelFixText, withoutUnreadable, unreadableReason, privatePyprojectReason, tileText, missedText, privateText, badgeMarkdown, fixLinks,
+  gapWheelTitle, gapWheelsNote, gapWheelFixText, withoutUnreadable, unreadableReason, privatePyprojectReason, tileText, missedText, privateText, badgeMarkdown, fixLinks,
   notCheckedTail, NESTED_DEPTH,
 } from "./check-logic.mjs";
 
@@ -153,7 +153,7 @@ worker.onmessage = ({ data }) => {
   if (data.type === "gap-wheels") {
     state.gapWheels = data.gapWheels;
     // Said on the page, not only in the tag's tooltip: a touch screen or a keyboard never shows a title.
-    $("gap-wheels-note").textContent = state.gapWheels.text ? `Gap wheels are ${state.gapWheels.unofficial}.` : "";
+    $("gap-wheels-note").textContent = gapWheelsNote(state.gapWheels);
     $("gap-wheels-text").textContent = state.gapWheels.text;
     $("gap-wheels").hidden = !state.gapWheels.text;
     renderTable();
@@ -632,7 +632,7 @@ function renderTable() {
         return el("td", {}, el("span", { class: `status s-${s}`, text: STATUS_TEXT[s] || s }),
           v ? el("span", { class: `lab lab-${v.kind}`, text: LAB_SHORT[v.kind], title: `Build lab, ${lab.date} on ${lab.runner}: ${v.text}` }) : null,
           gapWheelFor(row, state.gapWheels, t.label)
-            ? el("span", { class: "lab", text: "gap wheel", title: state.gapWheels.unofficial })
+            ? el("span", { class: "lab", text: "gap wheel", title: gapWheelTitle(row, state.gapWheels, t.label) })
             : null);
       }),
       el("td", { class: `fix fix-${f.kind}` }, ...fixKids));

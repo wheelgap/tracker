@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import {
   parseRepo, inputHint, rawUrl, pickLockfile, autoPick, isSideFile, pickRequestedFile, isReadableFile, fileKind, toQuery, fromQuery, sortPythons, freeThreaded, fixFor, rowsFor, headline,
   cliCommand, packageCliCommand, projectNameFromMetadata, metadataFiles, fixPrompt, verdictText, shareText, nextSteps, validRef, labVerdict, labFor, canonicalName, gapWheelFor,
-  gapWheelFixText, withoutUnreadable, unreadableReason, tileText, missedText, privateText, badgeMarkdown, trimProject, trimReleases,
+  gapWheelTitle, gapWheelsNote, gapWheelFixText, withoutUnreadable, unreadableReason, tileText, missedText, privateText, badgeMarkdown, trimProject, trimReleases,
   fixLinks, validIssuesUrl,
 } from "../../site/check/check-logic.mjs";
 
@@ -12,7 +12,7 @@ test("PyPI trimming keeps the pinned consumer's fields without changing the inpu
   const file = {
     filename: "demo-1.0-py3-none-any.whl", requires_python: ">=3.13", yanked: "withdrawn",
     packagetype: "bdist_wheel", upload_time_iso_8601: "2026-11-21T00:00:00Z", size: 123,
-    url: "https://files.pythonhosted.org/unused", digests: { sha256: "unused" }, comment_text: "unused",
+    url: "https://files.pythonhosted.org/unused", digests: { md5: "unused", sha256: "ab12" }, comment_text: "unused",
   };
   const doc = {
     info: { version: "1.0", project_urls: { Source: "https://example.org/src" }, home_page: "https://example.org/",
@@ -20,7 +20,11 @@ test("PyPI trimming keeps the pinned consumer's fields without changing the inpu
     urls: [file], releases: { "1.0": [file], "0.9": [] }, last_serial: 123,
   };
   const before = structuredClone(doc);
-  const keptFile = { filename: file.filename, requires_python: ">=3.13", yanked: "withdrawn" };
+  // wheelgap 0.14.0 also reads digests.sha256 (--hash options) and upload_time_iso_8601 (exclude-newer).
+  const keptFile = {
+    filename: file.filename, requires_python: ">=3.13", yanked: "withdrawn", upload_time_iso_8601: "2026-11-21T00:00:00Z",
+    digests: { sha256: "ab12" },
+  };
   const keptReleases = { "1.0": [keptFile], "0.9": [] };
   assert.deepEqual(trimProject(doc), {
     info: { version: "1.0", project_urls: doc.info.project_urls, home_page: doc.info.home_page },
@@ -43,6 +47,10 @@ test("trimming preserves malformed and missing shapes instead of inventing empty
   assert.deepEqual(trimProject({ message: "Not Found" }), {}); // still missing urls and releases
   assert.deepEqual(trimProject({ info: { version: "1.0" } }), { info: { version: "1.0" } });
   assert.deepEqual(trimProject({ urls: [], releases: {} }), { urls: [], releases: {} }); // valid empty is distinct
+  // A digests value that isn't an object is kept as it is, for wheelgap to read (or refuse) itself.
+  for (const digests of [null, "ab12", ["ab12"]]) {
+    assert.deepEqual(trimReleases({ "1.0": [{ filename: "a-1.0.tar.gz", digests }] }), { "1.0": [{ filename: "a-1.0.tar.gz", digests }] });
+  }
   const files = [null, false, "bad", [], {}, { filename: null }, { filename: 1 }, { yanked: false },
     { filename: "demo.whl", requires_python: null, yanked: false }];
   assert.deepEqual(trimProject({ urls: files }), { urls: files });
@@ -98,15 +106,15 @@ test("pickRequestedFile checks a named file, adds a readable one from the tree, 
   assert.equal(missing.notice, "requirements/gone.txt wasn't found in this repository.");
   assert.equal(pickRequestedFile(locks, "setup.cfg", true, null).notice, "setup.cfg isn't a file this page reads.");
   assert.deepEqual(pickRequestedFile([], "setup.cfg", true, null), { lock: null, lockfiles: [], auto: true, notice: "setup.cfg isn't a file this page reads.", choose: null });
-  for (const yes of ["uv.lock", "a/Pipfile.lock", "pixi.lock", "pylock.dev.toml", "uv-py312.lock", "requirements-dev.lock", "x/reqs.in", "pyproject.toml"]) {
+  // script.py.lock: wheelgap 0.14.0 reads a PEP 723 script's lock as a uv.lock, so a link that names one checks it.
+  for (const yes of ["uv.lock", "a/Pipfile.lock", "pixi.lock", "pylock.dev.toml", "uv-py312.lock", "requirements-dev.lock", "x/reqs.in", "pyproject.toml", "script.py.lock"]) {
     assert.equal(isReadableFile(yes), true, yes);
   }
-  // script.py.lock: the pinned wheelgap 0.13.0 doesn't read a script's lock ("don't know how to read"), so it's
-  // refused here with the fallback, never checked and reported as unreadable.
-  for (const no of ["setup.cfg", "README.md", "setup.py", "Cargo.lock", "script.py.lock", "report.json", "pipfile.lock"]) {
+  for (const no of ["setup.cfg", "README.md", "setup.py", "Cargo.lock", "report.json", "pipfile.lock"]) {
     assert.equal(isReadableFile(no), false, no);
   }
-  assert.equal(pickRequestedFile(locks, "scripts/tool.py.lock", true, null).notice, "scripts/tool.py.lock isn't a file this page reads.");
+  const script = pickRequestedFile(locks, "scripts/tool.py.lock", true, null);
+  assert.deepEqual([script.notice, script.lock], [null, { path: "scripts/tool.py.lock", offline: true, added: true }]);
 });
 
 test("pickRequestedFile's own pick is autoPick()'s: several requirements files under other names are asked about", () => {
@@ -124,14 +132,14 @@ test("pickRequestedFile's own pick is autoPick()'s: several requirements files u
 });
 
 test("a named file is checked offline exactly when wheelgap reads it as a lockfile that lists its files", () => {
-  // As sources.file_kind in wheelgap 0.13.0, and driver.py's OFFLINE_KINDS: by the reader its name picks, not by an
+  // As sources.file_kind in wheelgap 0.14.0, and driver.py's OFFLINE_KINDS: by the reader its name picks, not by an
   // exact name, so a pylock.dev.toml or uv-py312.lock isn't read as a lookups file (its left-out Pythons would show
   // false gaps), and a requirements-dev.lock is still looked up.
   const kinds = {
     "uv.lock": "uv", "a/pylock.toml": "pylock", "poetry.lock": "poetry", "pdm.lock": "pdm", "Pipfile.lock": "pipfile",
     "pixi.lock": "pixi", "pyproject.toml": "pyproject", "pylock.dev.toml": "pylock", "uv-py312.lock": "uv",
     "requirements-dev.lock": "requirements", "requirements.uv.lock": "requirements", "x/dev.txt": "requirements",
-    "reqs.in": "requirements", "script.py.lock": null, "REQS.TXT": null, "report.json": null,
+    "reqs.in": "requirements", "script.py.lock": "uv", "requirements.py.lock": "uv", "REQS.TXT": null, "report.json": null,
   };
   for (const [path, kind] of Object.entries(kinds)) assert.equal(fileKind(path), kind, path);
   const offline = (path) => pickRequestedFile([], path, true, null).lock.offline;
@@ -313,7 +321,7 @@ test("autoPick reads the root's other requirements files as wheelgap's _other_re
 });
 
 test("autoPick never takes the one input it lists for the only one when wheelgap DIR finds more in folders plan() skips", () => {
-  // build/requirements.txt: plan() skips build/ (wheelgap 0.13.0's suggest_targets._SKIP_DIRS), wheelgap's
+  // build/requirements.txt: plan() skips build/ (wheelgap 0.14.0's suggest_targets._SKIP_DIRS), wheelgap's
   // _nested_inputs() doesn't, so `wheelgap DIR` asks between it and backend/uv.lock.
   const backend = at("backend/uv.lock");
   assert.deepEqual(autoPick([backend], null, { unlistedInputs: ["build/requirements.txt"] }), { lock: null, choose: [backend], why: "subfolders" });
@@ -829,7 +837,34 @@ test("the copy prompt includes only the driver's gap wheel instructions", () => 
   assert.equal(gapWheelFixText({ ...row, version: "2.0.1" }, gapWheels), null);
   assert.equal(gapWheelFixText(row, null), null);
   const prompt = fixPrompt("o/r", result, {}, ["3.13"], ["win-amd64"], gapWheels);
-  assert.match(prompt, /unofficial, built by wheelgap/);
+  assert.match(prompt, /For gaps a release bump does not cover, these gap wheels are unofficial, built by wheelgap:/);
+  assert.ok(prompt.includes(gapWheels.text));
+  assert.equal(gapWheelTitle(row, gapWheels, "3.13 win-amd64"), "unofficial, built by wheelgap");
+  assert.equal(gapWheelTitle(row, gapWheels, "3.13 win-arm64"), "");
+  assert.equal(gapWheelsNote(gapWheels), "Gap wheels are unofficial, built by wheelgap.");
+  assert.equal(gapWheelsNote(null), "");
+});
+
+test("a gap wheel for a gap an upgrade fixes is the fallback, as wheelgap 0.14.0's --fix says", () => {
+  // The driver marks the cell `fallback` and says `upgrades` once fixes() found an upgrade (fix.alternatives and
+  // fix.any_upgrade); its text is the CLI's "As a fallback, ..." section.
+  const gapWheels = {
+    cells: [{ name: "PyYAML", version: "6.0.3", target: "3.15 linux-x86_64", fallback: true }],
+    text: "As a fallback, wheelgap's gap wheel index has unofficial wheels PyPI lacks ...\n  PyYAML 6.0.3: 3.15 linux-x86_64 (if you can't upgrade PyYAML)",
+    unofficial: "unofficial, built by wheelgap",
+    upgrades: true,
+  };
+  const row = { name: "PyYAML", version: "6.0.3", gaps: ["3.15 linux-x86_64"], keep: [], lookup: true };
+  assert.equal(gapWheelTitle(row, gapWheels, "3.15 linux-x86_64"), "if you can't upgrade PyYAML: unofficial, built by wheelgap");
+  assert.equal(
+    gapWheelsNote(gapWheels),
+    "Upgrade first: where the Fix column names an official release, a gap wheel is only for when you can't upgrade. Gap wheels are unofficial, built by wheelgap.",
+  );
+  // The Fix column names the upgrade, not the gap wheel.
+  const fixes = { "PyYAML==6.0.3": { found: { "3.15 linux-x86_64": "6.0.4" }, loses: [] } };
+  assert.deepEqual(fixFor(row, fixes), { kind: "all", version: "6.0.4", text: "6.0.4" });
+  const prompt = fixPrompt("o/r", { lockfile: "requirements.txt", rows: [row] }, fixes, ["3.15"], ["linux-x86_64"], gapWheels);
+  assert.ok(prompt.indexOf("- PyYAML 6.0.3 -> 6.0.4") < prompt.indexOf("As a fallback, only where a bump above isn't possible"));
   assert.ok(prompt.includes(gapWheels.text));
 });
 

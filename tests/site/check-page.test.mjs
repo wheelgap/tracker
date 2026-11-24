@@ -128,12 +128,19 @@ function workerCheck({
 }
 
 test("check trims pinned and project JSON before the driver and keeps only trimmed releases for fixes", async () => {
-  const file = { filename: "fastlib-1.0.tar.gz", requires_python: ">=3.13", yanked: false, digests: { sha256: "unused" } };
+  // digests.sha256 (for --hash options) and upload_time_iso_8601 (for exclude-newer) are read since wheelgap 0.14.0.
+  const file = {
+    filename: "fastlib-1.0.tar.gz", requires_python: ">=3.13", yanked: false, digests: { md5: "unused", sha256: "00ab" },
+    upload_time: "2025-10-15T16:16:21", upload_time_iso_8601: "2025-10-15T16:16:21.072038Z", size: 1,
+  };
   const doc = { info: { version: "1.0", description: "unused".repeat(1000) }, urls: [file], releases: { "1.0": [file] }, last_serial: 123 };
   const needs = { lookups: [{ name: "fastlib", version: null }, { name: "pinned", version: "1.0" }], total: 2 };
   const worker = workerCheck({ needs, fetch: async () => ({ ok: true, json: async () => structuredClone(doc) }) });
   await worker.check();
-  const keptFile = { filename: file.filename, requires_python: ">=3.13", yanked: false };
+  const keptFile = {
+    filename: file.filename, requires_python: ">=3.13", yanked: false, upload_time_iso_8601: file.upload_time_iso_8601,
+    digests: { sha256: "00ab" },
+  };
   const kept = { info: { version: "1.0" }, urls: [keptFile], releases: { "1.0": [keptFile] } };
   assert.deepEqual(JSON.parse(worker.checked[0][3]), { fastlib: kept, "pinned==1.0": kept });
   assert.deepEqual([...worker.releases], [["fastlib", kept.releases]]); // never cache a pinned response
@@ -608,7 +615,7 @@ test("renderTable shows the links in the Fix cell and the package-name link for 
   const SHOWN = 60;
 
   const runTable = new Function(
-    "$", "state", "el", "rowsFor", "fixFor", "gapWheelFixText", "canonicalName", "fixLinks", "labFor", "labVerdict", "gapWheelFor", "NAMES", "STATUS_TEXT", "LAB_SHORT", "FIX_TEXT", "SHOWN",
+    "$", "state", "el", "rowsFor", "fixFor", "gapWheelFixText", "canonicalName", "fixLinks", "labFor", "labVerdict", "gapWheelFor", "gapWheelTitle", "NAMES", "STATUS_TEXT", "LAB_SHORT", "FIX_TEXT", "SHOWN",
     `
     ${fn("renderTable")}
     return renderTable;
@@ -616,7 +623,7 @@ test("renderTable shows the links in the Fix cell and the package-name link for 
   )(
     $, state, el,
     checkLogic.rowsFor, checkLogic.fixFor, checkLogic.gapWheelFixText, checkLogic.canonicalName,
-    checkLogic.fixLinks, checkLogic.labFor, checkLogic.labVerdict, checkLogic.gapWheelFor,
+    checkLogic.fixLinks, checkLogic.labFor, checkLogic.labVerdict, checkLogic.gapWheelFor, checkLogic.gapWheelTitle,
     NAMES, STATUS_TEXT, LAB_SHORT, FIX_TEXT, SHOWN
   );
 
@@ -1375,11 +1382,11 @@ test("the gaps note never says every package has a wheel when a private index's 
     };
     new Function(
       "$", "state", "el", "rowsFor", "fixFor", "gapWheelFixText", "canonicalName", "fixLinks", "labFor", "labVerdict",
-      "gapWheelFor", "notCheckedTail", "NAMES", "STATUS_TEXT", "LAB_SHORT", "FIX_TEXT", "SHOWN",
+      "gapWheelFor", "gapWheelTitle", "notCheckedTail", "NAMES", "STATUS_TEXT", "LAB_SHORT", "FIX_TEXT", "SHOWN",
       `${nc[0]}\n${rt[0]}; return renderTable;`,
     )(
       $, state, () => ({}), checkLogic.rowsFor, checkLogic.fixFor, checkLogic.gapWheelFixText, checkLogic.canonicalName,
-      checkLogic.fixLinks, checkLogic.labFor, checkLogic.labVerdict, checkLogic.gapWheelFor, checkLogic.notCheckedTail,
+      checkLogic.fixLinks, checkLogic.labFor, checkLogic.labVerdict, checkLogic.gapWheelFor, checkLogic.gapWheelTitle, checkLogic.notCheckedTail,
       {}, {}, {}, {}, 60,
     )();
     return $("gaps-note").textContent;

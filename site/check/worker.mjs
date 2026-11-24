@@ -7,9 +7,10 @@ import { loadPyodide } from "https://cdn.jsdelivr.net/pyodide/v314.0.8/full/pyod
 import { rawUrl, trimProject, trimReleases, projectNameFromMetadata, metadataFiles } from "./check-logic.mjs";
 
 // The wheelgap release the page runs; tests/test_check_driver.py tests driver.py against the same one.
-// When this changes, re-read what that release's pypi._fill_json_data, pypi._newest_matching and suggest._has_wheel
-// read from PyPI's JSON: trimProject/trimReleases in check-logic.mjs keep only those fields.
-export const WHEELGAP = "wheelgap==0.13.0";
+// When this changes, re-read what that release's pypi._fill_json_data, pypi._newest_matching, pypi._sha256,
+// cutoff.before_cutoff and suggest._has_wheel read from PyPI's JSON: trimProject/trimReleases in check-logic.mjs keep
+// only those fields.
+export const WHEELGAP = "wheelgap==0.14.0";
 const MAX_FILE = 25 * 1024 * 1024;
 const MAX_FIX_LOOKUPS = 80;
 const MAX_GAP_WHEELS_BYTES = 4 * 1024 * 1024;
@@ -318,11 +319,16 @@ async function fetchGapWheels() {
   }
 }
 
-async function gapWheels(id, rows) {
-  const { driver } = await ready;
-  if (!driver.supports_gap_wheels() || !rows.some((row) => row.gaps.length)) return null;
+// The gap wheel list, fetched once while the fixes are looked up: null when no row has a gap.
+function gapWheelListFor(rows) {
+  if (!rows.some((row) => row.gaps.length)) return Promise.resolve(null);
   gapWheelList ??= fetchGapWheels().catch(() => null);
-  const list = await gapWheelList;
+  return gapWheelList;
+}
+
+// Asked only after fixes(), as wheelgap --fix does: a gap wheel for a gap an upgrade fixes too is only the fallback.
+async function gapWheels(id, list) {
+  const { driver } = await ready;
   return list && latestCheck === id ? JSON.parse(driver.gap_wheels(list)) : null;
 }
 
@@ -338,7 +344,7 @@ self.onmessage = async ({ data }) => {
       const result = await check(id, data.root, data.lockfile, data.options);
       post({ id, type: "result", result });
       if (!result.error) {
-        const pendingGapWheels = gapWheels(id, result.rows).catch(() => null);
+        const pendingList = gapWheelListFor(result.rows);
         let found = {};
         try {
           if (result.rows.some((r) => r.lookup)) found = await fixes(id, result.rows);
@@ -346,7 +352,7 @@ self.onmessage = async ({ data }) => {
           // a failed lookup leaves those rows "not looked up"; the result above stands
         }
         post({ id, type: "fixes", fixes: found });
-        const gap = await pendingGapWheels;
+        const gap = await gapWheels(id, await pendingList).catch(() => null);
         if (gap && latestCheck === id) post({ id, type: "gap-wheels", gapWheels: gap });
       }
     }

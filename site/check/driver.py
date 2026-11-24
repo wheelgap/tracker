@@ -7,8 +7,9 @@ files it was given, with wheelgap's own functions, so the page says what `uvx wh
 - detect(root): the targets and Pythons the repo's workflows and Dockerfiles name (wheelgap --suggest-targets).
 - needs(root, path): the PyPI lookups a file that doesn't list its packages' files needs before it can be checked.
 - check(root, lockfile, ...): the lockfile's gaps, from the files the lock lists or the ones PyPI answered with.
-- gap_wheels(list): which of the last check's gaps have a verified wheel (wheelgap --fix).
 - fixes(releases, wanted): for each gap, the nearest newer release with a wheel (wheelgap --suggest).
+- gap_wheels(list): which of the last check's gaps have a verified wheel, as wheelgap --fix's fallback after the
+  upgrades fixes() found.
 
 Every function takes and returns JSON text, so nothing depends on how Pyodide converts objects.
 tests/test_check_driver.py runs it under CPython with the wheelgap version worker.mjs pins.
@@ -17,13 +18,13 @@ tests/test_check_driver.py runs it under CPython with the wheelgap version worke
 from __future__ import annotations
 
 import json
+import os
 import re
-import tomllib
 from pathlib import Path, PurePosixPath
 
 import wheelgap
 from packaging.utils import canonicalize_name
-from wheelgap import api, offline, origin, pypi, sources, suggest_targets
+from wheelgap import api, fix, gapwheels, offline, origin, pypi, sources, suggest_targets
 from wheelgap import suggest as release_suggest
 from wheelgap.check import Row, Status
 from wheelgap.sources import LOCKFILES, Package, Source, SourceError, file_kind, load_file, pythons_outside_lock
@@ -50,9 +51,10 @@ MAX_DOCKERFILES = 40
 # `uv pip install -r`, and `uv export` writes no index lines. NEARBY_CONFIG_READERS are the readers (load_file's
 # `kind`) that call it. The browser has only the files the worker fetched, so the worker fetches these for the file
 # being checked (configs_for), and needs() and check() keep the file private when one the repo has isn't there to
-# read. tests/test_check_driver.py checks both lists against the pinned release.
+# read. tests/test_check_driver.py checks both lists against the pinned release. (The page offers no PEP 723 script
+# or conda environment file, but their readers read them too.)
 CONFIG_NAMES = ("uv.toml", "pyproject.toml", "pdm.toml")
-NEARBY_CONFIG_READERS = ("requirements", "pyproject", "pipfile")
+NEARBY_CONFIG_READERS = ("requirements", "pyproject", "pipfile", "script", "conda-env")
 
 # Public extra indexes: a requirements file whose only index options are an --extra-index-url to one of these is still
 # looked up on PyPI (pip asks PyPI for every name too, so none is private). Adding a host is a reviewed change; each
@@ -65,24 +67,24 @@ PUBLIC_EXTRA_INDEXES: dict[str, frozenset[str]] = {
 # the URL https on a lowercase host with a plain path: no user@, port, quote, ${VAR}, %, ?, # or backslash, which pip
 # could read as something else. Anything else wheelgap counts as an index option keeps the file private.
 _PUBLIC_EXTRA_LINE = re.compile(r"--extra-index-url(?:=|[ \t]+)https://([a-z0-9.-]+)(?:/[A-Za-z0-9._~/-]*)?")
-try:
-    from wheelgap import gapwheels
-except ImportError:  # the pinned release may predate --fix
-    gapwheels = None
 
 # Targets of the last check(), by label, for fixes().
 _targets: dict[str, Target] = {}
 _last_check: tuple[list[Row], list[Target], Source] | None = None
-
-
-def supports_gap_wheels() -> bool:
-    return gapwheels is not None
+# What fixes() found for the last check, by `name==version` as it answers: gap_wheels() orders its gap wheels after
+# these upgrades, as --fix does.
+_suggestions: dict[str, release_suggest.Suggestion] = {}
 
 
 def gap_wheels(list_json: str) -> str:
-    """Reuse the CLI's eligibility rules and render the same installation instructions."""
-    empty = {"cells": [], "text": "", "unofficial": ""}
-    if gapwheels is None or _last_check is None:
+    """The CLI's --fix gap wheel section for the last check: its eligibility rules (gapwheels.fillable) and its text.
+
+    As in --fix, an upgrade to an official release comes first: call this after fixes(), and a gap wheel for a cell an
+    upgrade fixes too (fix.alternatives) is only the fallback, `"fallback": true` in its cell and "(if you can't
+    upgrade NAME)" in the text, which then starts "As a fallback, ...". `upgrades` says whether fixes() found any
+    upgrade for the check's gaps, as fix.any_upgrade does for the CLI's section."""
+    empty = {"cells": [], "text": "", "unofficial": "", "upgrades": False}
+    if _last_check is None:
         return json.dumps(empty)
     try:
         wheels = gapwheels.parse(json.loads(list_json))
@@ -91,20 +93,26 @@ def gap_wheels(list_json: str) -> str:
     if not wheels:
         return json.dumps(empty)
     rows, targets, source = _last_check
-    fills = gapwheels.fillable(
-        rows,
-        targets,
-        {id(row.package): source for row in rows},
-        wheels,
-        origin.private_names([source]),
-    )
+    source_of = {id(row.package): source for row in rows}
+    fills = gapwheels.fillable(rows, targets, source_of, wheels, origin.private_names([source]))
     if not fills:
         return json.dumps(empty)
+    gaps = [r for r in rows if fix.gap_targets(r, targets)]
+    found = {
+        id(r.package): s for r in gaps if (s := _suggestions.get(f"{r.package.name}=={r.package.version}")) is not None
+    }
+    # The rows fixes() has no answer for get none here; fix.plan() reads that as "not looked up", whatever the reason.
+    cells = fix.plan(gaps, targets, source_of, found, fills, {})
+    fallback, upgrades = fix.alternatives(cells), fix.any_upgrade(cells)
     return json.dumps(
         {
-            "cells": gapwheels.to_json(fills, True),
-            "text": "\n".join(gapwheels.text_lines(fills, True)).strip(),
+            "cells": [
+                entry | {"fallback": (id(f.row), f.target) in fallback}
+                for f, entry in zip(fills, gapwheels.to_json(fills, True), strict=True)
+            ],
+            "text": "\n".join(gapwheels.text_lines(fills, True, fallback, upgrades)).strip(),
             "unofficial": gapwheels.UNOFFICIAL,
+            "upgrades": upgrades,
         }
     )
 
@@ -123,11 +131,8 @@ def _skipped_folder(parts: tuple[str, ...]) -> bool:
 
 
 # Text files in a requirements/ folder that aren't requirements files, by the start of their name (any case), as
-# wheelgap's `wheelgap DIR` leaves them out (sources._NOT_REQUIREMENTS, after 0.13.0).
-_NOT_REQUIREMENTS = (
-    *("constraint", "readme", "license", "licence", "copying", "notice", "changelog", "changes"),
-    *("history", "authors", "contributing", "todo", "notes"),
-)
+# `wheelgap DIR` leaves them out.
+_NOT_REQUIREMENTS = sources._NOT_REQUIREMENTS
 
 
 def _is_extra_requirements(pp: PurePosixPath) -> bool:
@@ -216,28 +221,12 @@ def plan(paths_json: str) -> str:
 
 
 def _pyproject_is_project(path: Path) -> bool:
-    """Whether a pyproject.toml wheelgap couldn't read still describes a project of its own, as wheelgap's
-    sources._unread_project() decides on main (after 0.13.0; mirrored, since the page pins 0.13.0): a [project] or
-    [build-system] table, [tool.flit.metadata], PDM-legacy [tool.pdm] dependencies, Poetry dependencies other than
-    python, or a file that isn't valid TOML. A root that is one isn't taken for a subfolder input's project
-    (autoPick() in check-logic.mjs). A setup.py or setup.cfg beside it isn't fetched: the page has plan()'s
-    `root_project_files` for those."""
-    try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except OSError:
-        return False
-    except ValueError:  # not TOML, or not UTF-8 (UnicodeDecodeError)
-        return True
-    tool = data.get("tool") if isinstance(data.get("tool"), dict) else {}
-    flit, pdm, poetry = (tool.get(name) for name in ("flit", "pdm", "poetry"))
-    poetry_deps = poetry.get("dependencies") if isinstance(poetry, dict) else None
-    return (
-        "project" in data
-        or "build-system" in data
-        or (isinstance(flit, dict) and "metadata" in flit)
-        or (isinstance(pdm, dict) and "dependencies" in pdm)
-        or (isinstance(poetry_deps, dict) and any(str(dep).lower() != "python" for dep in poetry_deps))
-    )
+    """Whether a pyproject.toml wheelgap couldn't read still describes a project of its own, as `wheelgap DIR` decides
+    (sources._unread_project): a [project] or [build-system] table, [tool.flit.metadata], PDM-legacy [tool.pdm]
+    dependencies, Poetry dependencies other than python, or a file that isn't valid TOML. A root that is one isn't
+    taken for a subfolder input's project (autoPick() in check-logic.mjs). A setup.py or setup.cfg beside it isn't
+    fetched: the page has plan()'s `root_project_files` for those."""
+    return sources._unread_project(path.parent) is not None
 
 
 def _reads_nearby_configs(path: str) -> bool:
@@ -451,6 +440,16 @@ def _keep_private_without_configs(source: Source, root: str, path: str, configs_
     return why
 
 
+def _missing_include(e: Exception) -> Path | None:
+    """The absolute path of the include a requirements file names that isn't there, or None for any other error.
+    wheelgap reports it as a SourceError ("FILE:LINE: -r NAME: file not found") raised from the FileNotFoundError,
+    which has the path."""
+    cause = e if isinstance(e, FileNotFoundError) else e.__cause__
+    if isinstance(cause, FileNotFoundError) and cause.filename:
+        return Path(os.fsdecode(cause.filename))
+    return None
+
+
 def needs(root: str, path: str, configs_json: str | None = None) -> str:
     """The PyPI lookups checking `path` needs: every package wheelgap's pypi.fill_all() would look up, with its
     canonical name and pinned version or null, each once. A package that has to stay off pypi.org (see _private) is
@@ -467,16 +466,18 @@ def needs(root: str, path: str, configs_json: str | None = None) -> str:
         return json.dumps({"lookups": [], "total": 0})
     try:
         source = load_file(Path(root) / path)
-    except FileNotFoundError as e:  # an include (-r, -c) the worker hasn't fetched yet: name it
-        # wheelgap resolves an include's path before reading it, so this is where it really points.
-        missing, base = Path(e.filename or ""), Path(root).resolve()
+    except (SourceError, ValueError, OSError) as e:  # ValueError: a file that isn't valid TOML or JSON
+        if (missing := _missing_include(e)) is None:
+            return json.dumps({"error": str(e).replace(f"{root}/", ""), "kind": "source"})
+        # An include (-r, -c) the worker hasn't fetched yet: name it. wheelgap makes an include's path absolute
+        # (os.path.abspath, which folds `..` but follows no link) before reading it, so compare it with the root made
+        # absolute the same way: resolve() would follow a link in the root's own path, and nothing would match.
+        base = Path(os.path.abspath(root))
         if not missing.is_relative_to(base):
             error = f"{PurePosixPath(path).name} includes a file outside the repository, which can't be read here"
             return json.dumps({"error": error, "kind": "include", "path": None})
         inc = missing.relative_to(base).as_posix()
         return json.dumps({"error": f"{inc} (an include) isn't fetched yet", "kind": "include", "path": inc})
-    except (SourceError, ValueError, OSError) as e:  # ValueError: a file that isn't valid TOML or JSON
-        return json.dumps({"error": str(e).replace(f"{root}/", ""), "kind": "source"})
     _keep_private_without_configs(source, root, path, configs_json)
     extra_hosts = (
         _public_extra_hosts(root, path, configs_json) if source.kind == "requirements" and not source.pypi_only else []
@@ -543,6 +544,7 @@ def check(
     """
     global _last_check
     _last_check = None
+    _suggestions.clear()
     options = json.loads(options_json)
     limits = {k: options[k] for k in ("glibc", "musl", "macos") if isinstance(options.get(k), str)}
     try:
@@ -663,6 +665,7 @@ def fixes(releases_json: str, wanted_json: str) -> str:
     release"."""
     releases, wanted = json.loads(releases_json), json.loads(wanted_json)
     out = {}
+    _suggestions.clear()
     for row in wanted:
         rel = releases.get(row["name"])
         if not row.get("lookup") or not row.get("gaps") or not isinstance(rel, dict) or not row.get("version"):
@@ -673,6 +676,7 @@ def fixes(releases_json: str, wanted_json: str) -> str:
             found = release_suggest.suggest(rel, row["version"], gaps, keep)
         except ValueError:  # an invalid pinned version: nothing to compare against
             continue
+        _suggestions[f"{row['name']}=={row['version']}"] = found
         out[f"{row['name']}=={row['version']}"] = {
             "found": {t.label(True): v for t, v in found.found.items()},
             "loses": [t.label(True) for t in found.loses],
