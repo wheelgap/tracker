@@ -447,11 +447,11 @@ test("a clean verdict offers the README badge in the verdict card and hides it f
       result: { lockfile: "uv.lock", packages, targets, outside_lock: [], rows, skipped: [], private: [], looked_up: false, ...extra },
     };
     const fns = new Function(
-      "$", "state", "el", "headline", "verdictText", "nextSteps", "sortPythons", "missedText", "cliCommand", "badgeMarkdown",
+      "$", "state", "el", "headline", "verdictText", "nextSection", "nextSteps", "sortPythons", "missedText", "cliCommand", "badgeMarkdown",
       "pickLockfile", "autoPick", "privatePyprojectReason", "privateText", "shareText", "copy", "location",
       `${nc[0]}\n${rv[0]}\n${rn[0]}\n${countedSrc[0]}\n${shareSrc[0]}\nreturn { renderVerdict, renderNext };`,
     )(
-      element, state, () => ({}), checkLogic.headline, checkLogic.verdictText, checkLogic.nextSteps, checkLogic.sortPythons,
+      element, state, () => ({}), checkLogic.headline, checkLogic.verdictText, checkLogic.nextSection, checkLogic.nextSteps, checkLogic.sortPythons,
       checkLogic.missedText, checkLogic.cliCommand, checkLogic.badgeMarkdown, checkLogic.pickLockfile, checkLogic.autoPick,
       checkLogic.privatePyprojectReason, checkLogic.privateText, checkLogic.shareText,
       (button, text) => { button.copiedText = text; }, { href: "https://wheelgap.github.io/tracker/check/?repo=o/r" },
@@ -480,20 +480,24 @@ test("a clean verdict offers the README badge in the verdict card and hides it f
   assert.equal(withGaps("prompt-note").hidden, false);
   assert.equal(withGaps("cli").textContent, "uvx wheelgap uv.lock -p 3.14 -t linux-x86_64");
 
-  // Result with unknowns: verdict badge hidden, not clean.
+  // Result with unknowns: verdict badge hidden, not clean, Check it locally without fix prompt.
   const withUnknowns = run([{ name: "u", gaps: [], unknown: ["3.14 linux-x86_64"] }]);
   assert.equal(withUnknowns("verdict-badge").hidden, true);
   assert.equal(withUnknowns("verdict section").classList.has("clean"), false);
-  assert.equal(withUnknowns("next-title").textContent, "Fix it");
+  assert.equal(withUnknowns("next-title").textContent, "Check it locally");
+  assert.equal(withUnknowns("copy-prompt").hidden, true);
+  assert.equal(withUnknowns("prompt-note").hidden, true);
 
   // Nothing checked: verdict badge hidden.
   const empty = run([], 0);
   assert.equal(empty("verdict-badge").hidden, true);
 
-  // Clean, but a private index's packages weren't checked: no badge offer and no "Keep it green".
+  // Clean, but a private index's packages weren't checked: no badge offer, no "Keep it green", Check it locally without fix prompt.
   const withPrivate = run([], 5, undefined, { private: ["corp"], skipped: ["corp"] });
   assert.equal(withPrivate("verdict-badge").hidden, true);
-  assert.equal(withPrivate("next-title").textContent, "Fix it");
+  assert.equal(withPrivate("next-title").textContent, "Check it locally");
+  assert.equal(withPrivate("copy-prompt").hidden, true);
+  assert.equal(withPrivate("prompt-note").hidden, true);
   assert.equal(withPrivate("verdict section").classList.has("clean"), false);
   assert.doesNotMatch(withPrivate("verdict").textContent, /✓/);
   assert.match(withPrivate("verdict").textContent, /1 more wasn't checked/);
@@ -508,7 +512,7 @@ test("a clean verdict offers the README badge in the verdict card and hides it f
     repeatedPrivate("verdict").textContent,
     "1 checked package has a wheel for this target; 1 more wasn't checked (its index isn't known to be PyPI)",
   );
-  assert.equal(repeatedPrivate("next-title").textContent, "Fix it");
+  assert.equal(repeatedPrivate("next-title").textContent, "Check it locally");
   const shareButton = repeatedPrivate("copy-share");
   shareButton.onclick({ currentTarget: shareButton });
   assert.match(shareButton.copiedText, /; 1 more wasn't checked/);

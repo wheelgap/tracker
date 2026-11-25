@@ -685,6 +685,15 @@ export function verdictText(h, notChecked = 0) {
   return `${count} no wheel for ${some}${tail}`;
 }
 
+// Heading and whether to show the coding-agent fix prompt for the bottom section.
+export function nextSection(h, notChecked = 0) {
+  if (h.gaps > 0) return { title: "Fix it", showPrompt: true };
+  if (h.unknown > 0 || notChecked > 0 || h.targets === 0 || h.packages === 0) {
+    return { title: "Check it locally", showPrompt: false };
+  }
+  return { title: "Keep it green", showPrompt: false };
+}
+
 // One-line plain-text summary of a result, ending with the share link. Built as text, never as HTML. The line is
 // pasted where the page's alerts don't follow it, so `notChecked` (the packages left off pypi.org as a private
 // index's, which the counts leave out) is said in the line itself, and a result with any is never a ✓.

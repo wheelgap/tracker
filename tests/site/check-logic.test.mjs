@@ -5,7 +5,7 @@ import {
   parseRepo, inputHint, rawUrl, pickLockfile, autoPick, isSideFile, pickRequestedFile, isReadableFile, fileKind, toQuery, fromQuery, sortPythons, freeThreaded, fixFor, rowsFor, headline,
   cliCommand, packageCliCommand, projectNameFromMetadata, metadataFiles, fixPrompt, verdictText, shareText, nextSteps, validRef, labVerdict, labFor, canonicalName, gapWheelFor,
   gapWheelTitle, gapWheelsNote, gapWheelFixText, withoutUnreadable, unreadableReason, tileText, missedText, privateText, badgeMarkdown, trimProject, trimReleases,
-  fixLinks, validIssuesUrl,
+  fixLinks, validIssuesUrl, nextSection,
 } from "../../site/check/check-logic.mjs";
 
 test("PyPI trimming keeps the pinned consumer's fields without changing the input", () => {
@@ -969,5 +969,14 @@ test("validIssuesUrl makes the package page's valid_issues_url() check, host by 
     "//github.com/o/r", "", null, undefined, 42]) {
     assert.equal(validIssuesUrl(no), false, String(no));
   }
+});
+
+test("nextSection chooses the heading and whether to show the fix prompt", () => {
+  assert.deepEqual(nextSection({ gaps: 0, unknown: 0, packages: 5, targets: 2 }), { title: "Keep it green", showPrompt: false });
+  assert.deepEqual(nextSection({ gaps: 1, unknown: 0, packages: 5, targets: 2 }), { title: "Fix it", showPrompt: true });
+  assert.deepEqual(nextSection({ gaps: 1, unknown: 2, packages: 5, targets: 2 }), { title: "Fix it", showPrompt: true });
+  assert.deepEqual(nextSection({ gaps: 0, unknown: 1, packages: 5, targets: 2 }), { title: "Check it locally", showPrompt: false });
+  assert.deepEqual(nextSection({ gaps: 0, unknown: 0, packages: 5, targets: 2 }, 2), { title: "Check it locally", showPrompt: false });
+  assert.deepEqual(nextSection({ gaps: 0, unknown: 1, packages: 5, targets: 2 }, 2), { title: "Check it locally", showPrompt: false });
 });
 

@@ -5,7 +5,7 @@ import {
   PLATFORMS, PYTHONS, parseRepo, inputHint, pickRequestedFile, autoPick, toQuery, fromQuery, sortPythons, freeThreaded,
   fixFor, rowsFor, headline, cliCommand, packageCliCommand, fixPrompt, verdictText, shareText, nextSteps, validRef, labVerdict, labFor, canonicalName, gapWheelFor,
   gapWheelTitle, gapWheelsNote, gapWheelFixText, withoutUnreadable, unreadableReason, privatePyprojectReason, tileText, missedText, privateText, badgeMarkdown, fixLinks,
-  notCheckedTail, NESTED_DEPTH,
+  notCheckedTail, nextSection, NESTED_DEPTH,
 } from "./check-logic.mjs";
 
 const $ = (id) => document.getElementById(id);
@@ -646,10 +646,10 @@ function renderTable() {
 function renderNext() {
   const r = state.result;
   const h = headline(r);
-  const isClean = h.gaps === 0 && h.unknown === 0 && h.targets > 0 && h.packages > 0;
-  $("next-title").textContent = isClean && !notCheckedCount(r) ? "Keep it green" : "Fix it";
-  $("copy-prompt").hidden = isClean;
-  $("prompt-note").hidden = isClean;
+  const { title, showPrompt } = nextSection(h, notCheckedCount(r));
+  $("next-title").textContent = title;
+  $("copy-prompt").hidden = !showPrompt;
+  $("prompt-note").hidden = !showPrompt;
   // A command for the visitor's own index needs the placeholder the private-index alert asks them to add.
   const indexFlag = notCheckedCount(r) ? " --index-url YOUR_INDEX_URL" : "";
   $("cli").textContent = cliCommand(r, state.pythons, state.platforms) + indexFlag;
