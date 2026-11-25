@@ -5,7 +5,7 @@ import {
   PLATFORMS, PYTHONS, parseRepo, inputHint, pickRequestedFile, autoPick, toQuery, fromQuery, sortPythons, freeThreaded,
   fixFor, rowsFor, headline, cliCommand, packageCliCommand, fixPrompt, verdictText, shareText, nextSteps, validRef, labVerdict, labFor, canonicalName, gapWheelFor,
   gapWheelTitle, gapWheelsNote, gapWheelFixText, withoutUnreadable, unreadableReason, privatePyprojectReason, tileText, missedText, privateText, badgeMarkdown, fixLinks,
-  notCheckedTail, targetOutsideLock, environmentsText, NESTED_DEPTH,
+  notCheckedTail, targetOutsideLock, environmentsText, nextSection, NESTED_DEPTH,
 } from "./check-logic.mjs";
 
 const $ = (id) => document.getElementById(id);
@@ -660,12 +660,14 @@ function renderTable() {
 function renderNext() {
   const r = state.result;
   const h = headline(r);
-  const isClean = h.gaps === 0 && h.unknown === 0 && !h.unknownTargets && h.targets > 0 && h.packages > 0;
-  const undecided = h.unknownTargets > 0 && h.gaps === 0;
   const command = cliCommand(r, state.pythons, state.platforms);
-  $("next-title").textContent = !command ? "Choose a covered target" : isClean && !notCheckedCount(r) ? "Keep it green" : undecided ? "Check it locally" : "Fix it";
-  $("copy-prompt").hidden = isClean || undecided || !command;
-  $("prompt-note").hidden = isClean || undecided || !command;
+  // A target the lock's environments can't decide is checked locally; with no covered target there's no command.
+  const undecided = h.unknownTargets > 0 && h.gaps === 0;
+  const next = nextSection(h, notCheckedCount(r));
+  $("next-title").textContent = !command ? "Choose a covered target" : undecided ? "Check it locally" : next.title;
+  const showPrompt = next.showPrompt && !undecided && !!command;
+  $("copy-prompt").hidden = !showPrompt;
+  $("prompt-note").hidden = !showPrompt;
   // A command for the visitor's own index needs the placeholder the private-index alert asks them to add.
   const indexFlag = notCheckedCount(r) ? " --index-url YOUR_INDEX_URL" : "";
   $("cli").textContent = command ? command + indexFlag
@@ -701,7 +703,7 @@ $("copy-link").onclick = (e) => copy(e.currentTarget, location.href, "Link copie
 // never the current selection (a new check may still be running for it), and how many it left off pypi.org.
 const counted = (key) => [...new Set(state.result.targets.filter((t) => !targetOutsideLock(state.result, t) && !state.result.unknown_environments?.[t.label]).map((t) => t[key]))];
 $("copy-share").onclick = (e) => copy(e.currentTarget, shareText(`${state.repo.owner}/${state.repo.name}`, headline(state.result), counted("python"), counted("platform"), location.href, notCheckedCount(state.result)), "Result copied");
-$("copy-prompt").onclick = (e) => copy(e.currentTarget, fixPrompt(`${state.repo.owner}/${state.repo.name}`, state.result, state.fixes, state.pythons, state.platforms, state.gapWheels, state.lab), "Prompt copied");
+$("copy-prompt").onclick = (e) => copy(e.currentTarget, fixPrompt(`${state.repo.owner}/${state.repo.name}`, state.result, state.fixes, state.pythons, state.platforms, state.gapWheels, state.lab, notCheckedCount(state.result)), "Prompt copied");
 $("copy-badge").onclick = (e) => copy(e.currentTarget, $("badge-md").textContent, "Badge Markdown copied");
 $("copy-verdict-badge").onclick = (e) => copy(e.currentTarget, $("badge-md").textContent, "Badge Markdown copied");
 $("copy-gap-wheels").onclick = (e) => copy(e.currentTarget, state.gapWheels.text, "Gap wheel instructions copied");

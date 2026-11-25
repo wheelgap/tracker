@@ -1,6 +1,6 @@
 {
  "schema": 1,
- "wheelgap": "0.9.0",
+ "wheelgap": "0.14.0",
  "drops": [
   {
    "date": "2026-11-20",
@@ -332,5 +332,54 @@
    "target": "3.15 win-arm64"
   }
  ],
- "waiting": []
+ "waiting": [
+  {
+   "name": "fonttools",
+   "from": "4.68.0",
+   "version": "4.69.0",
+   "targets": [
+    "3.13 linux-x86_64",
+    "3.13 linux-aarch64",
+    "3.13 musl-x86_64",
+    "3.13 musl-aarch64",
+    "3.13 macos-arm64",
+    "3.13 macos-x86_64",
+    "3.13 win-amd64",
+    "3.13 win-arm64",
+    "3.14 linux-x86_64",
+    "3.14 linux-aarch64",
+    "3.14 musl-x86_64",
+    "3.14 musl-aarch64",
+    "3.14 macos-arm64",
+    "3.14 macos-x86_64",
+    "3.14 win-amd64",
+    "3.14 win-arm64",
+    "3.14t linux-x86_64",
+    "3.14t linux-aarch64",
+    "3.14t musl-x86_64",
+    "3.14t musl-aarch64",
+    "3.14t macos-arm64",
+    "3.14t macos-x86_64",
+    "3.14t win-amd64",
+    "3.14t win-arm64",
+    "3.15 linux-x86_64",
+    "3.15 linux-aarch64",
+    "3.15 musl-x86_64",
+    "3.15 musl-aarch64",
+    "3.15 macos-arm64",
+    "3.15 macos-x86_64",
+    "3.15 win-amd64",
+    "3.15 win-arm64",
+    "3.15t linux-x86_64",
+    "3.15t linux-aarch64",
+    "3.15t musl-x86_64",
+    "3.15t musl-aarch64",
+    "3.15t macos-arm64",
+    "3.15t macos-x86_64",
+    "3.15t win-amd64",
+    "3.15t win-arm64"
+   ],
+   "since": "2026-11-25T13:04:13+00:00"
+  }
+ ]
 }

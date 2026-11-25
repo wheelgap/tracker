@@ -659,7 +659,7 @@ export function fixLinks(row, f, trackerPkg = null, gapWheels = null) {
 }
 
 // A prompt to paste into Claude Code (or any coding agent): the gaps, the bumps that fix them, and how to confirm.
-export function fixPrompt(repoName, result, fixes, pythons, platforms, gapWheels = null, tracker = {}) {
+export function fixPrompt(repoName, result, fixes, pythons, platforms, gapWheels = null, tracker = {}, notChecked = 0) {
   const selected = cliTargets(result, pythons, platforms);
   if (!selected) return "No selected target is known to be covered by the lockfile's environments. Choose a covered target before checking again.";
   const groups = { all: [], some: [], loses: [], none: [], private: [], pending: [] };
@@ -694,9 +694,11 @@ export function fixPrompt(repoName, result, fixes, pythons, platforms, gapWheels
       : "For gaps a release bump does not cover";
     lines.push(`${when}, these gap wheels are ${gapWheels.unofficial}:`, gapWheels.text, "");
   }
+  const indexFlag = notChecked > 0 ? " --index-url YOUR_INDEX_URL" : "";
+  const indexNote = notChecked > 0 ? " (replace YOUR_INDEX_URL with the project's package index URL)" : "";
   lines.push(
-    "Check each bump against our version constraints (a new major version may need code changes), update the lockfile with the project's own tool, and confirm with:",
-    `  ${cliCommand(result, pythons, platforms)}`,
+    `Check each bump against our version constraints (a new major version may need code changes), update the lockfile with the project's own tool, and confirm with${indexNote}:`,
+    `  ${cliCommand(result, pythons, platforms)}${indexFlag}`,
     ...(selected.covered && selected.covered.length > selected.pythons.length * selected.platforms.length
       ? [`This command checks only Python ${sortPythons(selected.pythons).join(", ")} on ${selected.platforms.join(", ")}; check the other listed targets separately.`] : []),
     "",
@@ -736,6 +738,15 @@ export function verdictText(h, notChecked = 0) {
   const some = h.targets === 1 ? "this target" : `at least one of the ${h.targets} targets`;
   const count = h.packages === 1 ? `1 ${checked}package has` : `${h.gaps} of ${h.packages} ${checked}packages ${h.gaps === 1 ? "has" : "have"}`;
   return `${count} no wheel for ${some}${tail}`;
+}
+
+// Heading and whether to show the coding-agent fix prompt for the bottom section.
+export function nextSection(h, notChecked = 0) {
+  if (h.gaps > 0) return { title: "Fix it", showPrompt: true };
+  if (h.unknown > 0 || notChecked > 0 || h.targets === 0 || h.packages === 0) {
+    return { title: "Check it locally", showPrompt: false };
+  }
+  return { title: "Keep it green", showPrompt: false };
 }
 
 // One-line plain-text summary of a result, ending with the share link. Built as text, never as HTML. The line is
