@@ -933,7 +933,7 @@ test("the copy prompt keeps its original command without unchecked packages and 
   const fixes = { "demo-pkg==1.0": { found: {}, loses: [] } };
   const plain = fixPrompt("o/r", result, fixes, ["3.14"], ["linux-x86_64"]);
   assert.equal(plain,
-    "In o/r, wheelgap found dependencies in requirements.txt with no prebuilt wheel for some of the platforms we target (Python 3.14 on linux-x86_64), so they'd be compiled from source or fail to install.\n\n" +
+    "In o/r, wheelgap found dependencies in requirements.txt with no prebuilt wheel for some of the targets we checked (Python 3.14 on linux-x86_64), so they'd be compiled from source or fail to install.\n\n" +
     "No newer release has a wheel for these (consider dropping the target, another package, or building wheels):\n" +
     "- demo-pkg 1.0: 3.14 linux-x86_64\n\n" +
     "Check each bump against our version constraints (a new major version may need code changes), update the lockfile with the project's own tool, and confirm with:\n" +
