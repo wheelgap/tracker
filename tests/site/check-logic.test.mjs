@@ -700,6 +700,20 @@ test("the verdict counts checked and unchecked packages without claiming a compl
   );
 });
 
+test("a clean verdict says both targets for two, and all N for three or more", () => {
+  const cases = [
+    [1, 0, "✓ All 3 packages have a wheel for this target"],
+    [2, 0, "✓ All 3 packages have a wheel for both targets"],
+    [3, 0, "✓ All 3 packages have a wheel for all 3 targets"],
+    [1, 1, "All 3 checked packages have a wheel for this target; 1 more wasn't checked (its index isn't known to be PyPI)"],
+    [2, 1, "All 3 checked packages have a wheel for both targets; 1 more wasn't checked (its index isn't known to be PyPI)"],
+    [3, 1, "All 3 checked packages have a wheel for all 3 targets; 1 more wasn't checked (its index isn't known to be PyPI)"],
+  ];
+  for (const [targets, notChecked, expected] of cases) {
+    assert.equal(verdictText({ gaps: 0, unknown: 0, packages: 3, targets }, notChecked), expected);
+  }
+});
+
 test("shareText formats clean, gaps, unknowns, single target, and special characters as plain text", () => {
   const url = "https://wheelgap.github.io/tracker/check/?repo=owner/name";
   const sixPlatforms = ["linux-x86_64", "linux-aarch64", "musl-x86_64", "macos-arm64", "win-amd64", "win-arm64"];
