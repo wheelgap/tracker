@@ -272,12 +272,13 @@ class BuildLookupTests(TempDir):
             set(one),
             {
                 "schema", "name", "version", "rank", "pure", "error", "generated", "wheelgap", "results", "notes",
-                "pyodide", "bundled", "builds",
+                "pyodide", "bundled", "builds", "changes", "drops",
             },
         )
         self.assertEqual((one["pyodide"], one["bundled"]), ({}, {}))  # no pyodide_locks in this scan
         self.assertEqual(one["notes"], [])  # no notes directory given
         self.assertEqual(one["builds"], [])  # no build lab results given
+        self.assertEqual((one["changes"], one["drops"]), ([], []))  # no changes.json or drops.json given
         self.assertEqual(one["schema"], 1)
         self.assertEqual(one["name"], "typing-extensions")
         self.assertEqual(one["generated"], data["generated"])
