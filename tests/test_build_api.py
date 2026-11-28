@@ -48,14 +48,32 @@ def load(path):
 
 
 def check_logs(entry):
-    """The shape of a package file's `changes` and `drops`: at most LOG_LIMIT each, newest first."""
-    assert len(entry["changes"]) <= build_lookup.LOG_LIMIT == 20
-    assert len(entry["drops"]) <= build_lookup.LOG_LIMIT
+    """The shape of a package file's `changes` and `drops`: at most PER_TARGET per target each, newest first."""
+    assert build_lookup.PER_TARGET == 3
+    for items in (entry["changes"], entry["drops"]):
+        per = {}
+        for i in items:
+            per[i["target"]] = per.get(i["target"], 0) + 1
+        assert all(n <= build_lookup.PER_TARGET for n in per.values())
     assert all(set(c) == CHANGE_KEYS for c in entry["changes"])
     assert all(set(d) == DROP_KEYS for d in entry["drops"])
     for items in (entry["changes"], entry["drops"]):
         dates = [i["date"] for i in items]
         assert dates == sorted(dates, reverse=True)
+
+
+def assert_kept(kept, logged):
+    """Checked without the code under test: for each target, every logged entry is kept when the target has at most
+    PER_TARGET, and otherwise exactly PER_TARGET are, none older than one left out."""
+    key = lambda i: json.dumps(i, sort_keys=True)  # noqa: E731
+    assert {key(i) for i in kept} <= {key(i) for i in logged}
+    for target in {i["target"] for i in logged}:
+        mine = [i for i in logged if i["target"] == target]
+        got = [i for i in kept if i["target"] == target]
+        assert len(got) == min(len(mine), build_lookup.PER_TARGET), target
+        left_out = [i for i in mine if key(i) not in {key(g) for g in got}]
+        if left_out:
+            assert min(g["date"] for g in got) >= max(i["date"] for i in left_out), target
 
 
 @pytest.fixture(scope="module")
@@ -78,7 +96,7 @@ def test_real_drops_match_drops_json(real):
     entry = load(out / f"{name}.json")
     check_logs(entry)
     expected = [{k: d[k] for k in DROP_KEYS} for d in drops if build_campaigns.canonical(d["name"]) == name]
-    assert entry["drops"] == build_lookup.newest_first(expected)[: build_lookup.LOG_LIMIT]
+    assert_kept(entry["drops"], expected)
     assert entry["drops"][0]["date"] == dropped[0]["date"]
     assert entry["version"] == packages[name]["version"]
 
@@ -95,7 +113,7 @@ def test_real_changes_match_changes_json(real):
             for day in days for kind in ("gained", "lost") for i in day[kind]
             if build_campaigns.canonical(i["name"]) == name
         ]  # fmt: skip
-        assert entry["changes"] == build_lookup.newest_first(expected)[: build_lookup.LOG_LIMIT]
+        assert_kept(entry["changes"], expected)
 
 
 def test_real_numpy_and_every_file_have_both_lists(real):
@@ -133,19 +151,41 @@ def test_recent_drop_the_limit_and_the_order(tmp_path):
     out = build(tmp_path, coverage, changes, drops_file(drops))
     entry = load(out / "pkg.json")
     check_logs(entry)
-    assert len(entry["changes"]) == len(entry["drops"]) == 20
+    assert (len(entry["changes"]), len(entry["drops"])) == (9, 6)  # 3 per target: 3 targets changed, 2 dropped
     assert entry["changes"][:2] == [
         {"date": "2026-11-10", "from": "wheel", "target": "3.14 linux-aarch64", "to": "source", "version": "2.0"},
         {"date": "2026-11-10", "from": "wheel", "target": "3.14 macos-arm64", "to": "source", "version": "2.0"},
     ]
-    assert entry["changes"][-1]["date"] == "2026-11-04"  # the oldest 10 are left out
+    assert entry["changes"][-1]["date"] == "2026-11-08"  # each target's 7 oldest are left out
     assert entry["drops"][:2] == [  # by target within a day, whatever order the log has
         {"date": "2026-11-28", "from": "1.9", "target": "3.14 macos-arm64", "version": "2.0"},
         {"date": "2026-11-28", "from": "1.9", "target": "3.14 win-arm64", "version": "2.0"},
     ]
-    assert entry["drops"][-1]["date"] == "2026-11-19"
+    assert entry["drops"][-1]["date"] == "2026-11-26"
     other = load(out / "other.json")
     assert (other["changes"], other["drops"]) == ([], [])
+
+
+def test_one_release_changing_every_target_is_kept_whole(tmp_path):
+    # Review of #272: fonttools 4.69.0 lost 40 targets in one scan; a cap per package cut that day short.
+    labels = [f"3.{py} {plat}" for py in (13, 14) for plat in (f"plat-{n:02d}" for n in range(21))]  # 42 targets
+    coverage = scan([("pkg", "2.0", ["wheel"] * len(labels))], labels=labels)
+    lost = {"date": "2026-11-25", "gained": [], "lost": [
+        {"name": "pkg", "version": "1.9", "target": t, "from": "wheel", "to": "source"} for t in labels]}
+    gained = {"date": "2026-11-26", "gained": [
+        {"name": "pkg", "version": "2.0", "target": t, "from": "source", "to": "wheel"} for t in labels], "lost": []}
+    entry = load(build(tmp_path, coverage, [lost, gained]) / "pkg.json")
+    assert len(entry["changes"]) == 84
+    assert {c["target"] for c in entry["changes"] if c["date"] == "2026-11-25"} == set(labels)
+    assert [c["target"] for c in entry["changes"][:42]] == sorted(labels)  # newest day first, by target
+
+
+def test_within_a_day_entries_are_ordered_by_target_whatever_else_differs(tmp_path):
+    coverage = scan([("pkg", "2.0", ["wheel"] * 3)])
+    drops = [{"date": "2026-11-20", "name": "pkg", "from": "1.0", "version": "2.0", "target": "3.14 win-arm64"},
+             {"date": "2026-11-20", "name": "pkg", "from": "1.1", "version": "2.0", "target": "3.14 linux-aarch64"}]  # fmt: skip
+    entry = load(build(tmp_path, coverage, drops=drops_file(drops)) / "pkg.json")
+    assert [d["target"] for d in entry["drops"]] == ["3.14 linux-aarch64", "3.14 win-arm64"]
 
 
 def test_missing_or_malformed_logs_warn_and_carry_on(tmp_path, capsys):
@@ -199,7 +239,8 @@ def test_readme_and_page_example_is_what_the_build_writes(tmp_path):
     section = readme.split("## API for scripts and agents\n", 1)[1].split("\n## ", 1)[0]
     block = re.search(r"```json\n(.*?)```", section, re.S).group(1)
     assert json.loads(block) == build_api.EXAMPLE
-    assert "`changes`: the package's 20 newest" in section and "`drops`: its 20 newest" in section
+    assert "`changes`: for each target, the package's 3 newest" in section
+    assert "`drops`: for each target, its 3 newest" in section
     assert "(https://wheelgap.github.io/tracker/api/)" in section
     assert "## Data API" not in readme  # one section documents the files
 
@@ -217,7 +258,7 @@ def test_docs_page_and_sitemap(tmp_path):
     assert "curl -fsS https://wheelgap.github.io/tracker/data/packages/numpy.json" in page
     for endpoint in ("data/packages/&lt;name&gt;.json", "data/packages.json", "data/pyodide.json", "badge/&lt;name&gt;.json"):
         assert endpoint in page
-    assert "<code>changes</code>" in page and "<code>drops</code>" in page and "20 newest" in page
+    assert "<code>changes</code>" in page and "<code>drops</code>" in page and "for each target, its 3 newest" in page
     assert '<link rel="canonical" href="https://wheelgap.github.io/tracker/api/">' in page
     assert build_campaigns.FOOTER in page
     assert "<script" not in page
@@ -231,7 +272,8 @@ def test_docs_page_and_sitemap(tmp_path):
 def test_publish_step_builds_the_page_after_the_package_pages():
     workflow = (ROOT / ".github/workflows/scan.yml").read_text(encoding="utf-8")
     step = workflow.split("- name: Assemble the site", 1)[1].split("\n      - ", 1)[0]
-    assert step.index("scripts/build_pages.py") < step.index("python3 scripts/build_api.py _site\n")
+    assert step.index("scripts/build_pages.py") < step.index("if ! python3 scripts/build_api.py _site; then\n")
+    assert "::warning::couldn't build the Data API page" in step  # it never stops the deploy
     assert "python3 scripts/build_lookup.py data/coverage.json _site/data/packages\n" in step
     assert (build_lookup.CHANGES, build_lookup.DROPS) == (DATA / "changes.json", DATA / "drops.json")
     assert '<a href="api/">Data API</a>' in (ROOT / "site/index.html").read_text(encoding="utf-8")

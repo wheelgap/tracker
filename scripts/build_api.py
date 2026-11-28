@@ -41,7 +41,7 @@ def example() -> str:
 
 def page() -> str:
     e = html.escape
-    limit = build_lookup.LOG_LIMIT
+    limit = build_lookup.PER_TARGET
     summary = (
         "One small static JSON file per package: its wheel status on every Python and platform the tracker scans, "
         "its notes and build lab results, and its recent wheel changes and dropped platforms."
@@ -78,7 +78,7 @@ def page() -> str:
         <li><code>badge/&lt;name&gt;.json</code> (and <code>badge/&lt;name&gt;-tree.json</code> for the top 500, counting whole dependency trees): <a href="https://shields.io/badges/endpoint-badge">shields.io endpoint</a> badges for a README.</li>
       </ul>
       <h3>Recent changes and drops</h3>
-      <p>In a package's file, <code>changes</code> is its {limit} newest wheels gained or lost in the nightly scans (the log keeps {update_changes.KEEP_DAYS} days), as <code>{{date, from, target, to, version}}</code>, where <code>from</code> and <code>to</code> are results. <code>drops</code> is its {limit} newest <a href="../drops/">dropped platforms</a> (kept for a year), as <code>{{date, from, target, version}}</code>, where <code>from</code> is the release that had the wheel and <code>version</code> the one without it. Both are newest first, and <code>[]</code> when there are none. For example:</p>
+      <p>In a package's file, <code>changes</code> is, for each target, its {limit} newest wheels gained or lost in the nightly scans (the log keeps {update_changes.KEEP_DAYS} days), as <code>{{date, from, target, to, version}}</code>, where <code>from</code> and <code>to</code> are results. <code>drops</code> is, for each target, its {limit} newest <a href="../drops/">dropped platforms</a> (kept for a year), as <code>{{date, from, target, version}}</code>, where <code>from</code> is the release that had the wheel and <code>version</code> the one without it. Both are newest first, and <code>[]</code> when there are none. For example:</p>
       <pre><code>{e(example())}</code></pre>
       <p>Every file carries <code>"schema": 1</code>. New fields are added without changing it; it goes up only if a field changes meaning or goes away. Every field is described in the <a href="{e(README_URL)}">README</a>. The data is CC0.</p>
     </section>

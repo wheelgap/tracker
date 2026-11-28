@@ -9,8 +9,8 @@ current notes from notes_dir (default: the repository's notes/), for its bundled
 version Pyodide ships (read from the committed lock files, see pyodide_locks.py), and the build lab's
 results for it from data/builds.json (see build_lab.py), each for the release it built; lab.json next
 to it has the lab's results for each package's current release only, for the homepage. Each package file also has
-`changes` and `drops`: the package's LOG_LIMIT newest entries from data/changes.json and data/drops.json, newest
-first (a log that can't be fully read warns and is used as far as it can be, as on the package pages). Runs at
+`changes` and `drops`: the package's entries from data/changes.json and data/drops.json, the PER_TARGET newest for
+each target (so every target the logs name is there, however many changed in one release), newest first (a log that can't be fully read warns and is used as far as it can be, as on the package pages). Runs at
 publish time, so the files are never committed.
 """
 
@@ -37,7 +37,8 @@ BUILDS = Path(__file__).resolve().parent.parent / "data" / "builds.json"
 CHANGES = BUILDS.parent / "changes.json"
 DROPS = BUILDS.parent / "drops.json"
 DROPS_SCHEMA = 1  # of the drops.json this reads
-LOG_LIMIT = 20  # newest changes, and newest drops, per package file (changes.json keeps 90 days, drops.json a year)
+PER_TARGET = 3  # newest changes, and newest drops, per target in a package file (changes.json keeps 90 days, drops.json
+# a year); at most 3 x the scan's targets, and one release's events (up to one per target) are never cut
 CHANGE_FIELDS = ("from", "target", "to", "version")  # plus date, from the day
 DROP_FIELDS = ("date", "from", "target", "version")
 # The fields of a build lab result that go into a package file (build_lab.py's merge has checked them all).
@@ -83,13 +84,24 @@ def read_drops(path: Path | None) -> list[dict]:
 
 
 def newest_first(items: list[dict]) -> list[dict]:
-    """Newest date first; within a day in a fixed order (by target, then the other fields), so the output is stable."""
-    items = sorted(items, key=lambda i: json.dumps(i, sort_keys=True))
+    """Newest date first; within a day by target, then version, then the other fields, so the output is stable."""
+    items = sorted(items, key=lambda i: (i["target"], i["version"], json.dumps(i, sort_keys=True)))
     return sorted(items, key=lambda i: i["date"], reverse=True)
 
 
+def per_target(items: list[dict]) -> list[dict]:
+    """The PER_TARGET newest entries for each target, newest first (newest_first)."""
+    kept: dict[str, int] = {}
+    out = []
+    for item in newest_first(items):
+        if kept.get(item["target"], 0) < PER_TARGET:
+            kept[item["target"]] = kept.get(item["target"], 0) + 1
+            out.append(item)
+    return out
+
+
 def logs_by_package(changes_path: Path | None, drops_path: Path | None) -> dict[str, dict[str, list[dict]]]:
-    """Each package's `changes` and `drops`, keyed by canonical name, LOG_LIMIT of each, newest first.
+    """Each package's `changes` and `drops`, keyed by canonical name, PER_TARGET of each per target, newest first.
 
     A change is {date, from, target, to, version}, where from and to are results ("source" -> "wheel"), and a
     drop is {date, from, target, version}, where from is the release that had the wheel and version the one
@@ -107,8 +119,8 @@ def logs_by_package(changes_path: Path | None, drops_path: Path | None) -> dict[
         drops.setdefault(canonical(d["name"]), []).append({k: d[k] for k in DROP_FIELDS})
     return {
         name: {
-            "changes": newest_first(changes.get(name, []))[:LOG_LIMIT],
-            "drops": newest_first(drops.get(name, []))[:LOG_LIMIT],
+            "changes": per_target(changes.get(name, [])),
+            "drops": per_target(drops.get(name, [])),
         }
         for name in changes.keys() | drops.keys()
     }
